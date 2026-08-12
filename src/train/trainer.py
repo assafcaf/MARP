@@ -3,10 +3,10 @@ import random
 import time
 import numpy as np
 
-from src.env.commons_env import HarvestCommonsEnv, MAP
-from src.reward_model.preference_buffer import EpisodeRecord, PreferenceBuffer
-from src.reward_model.reward_model import RewardModel
-from src.reward_model.reward_trainer import RewardModelTrainer
+from ..env.commons_env import HarvestCommonsEnv, MAP
+from ..reward_model.preference_buffer import EpisodeRecord, PreferenceBuffer
+from ..reward_model.reward_model import RewardModel
+from ..reward_model.reward_trainer import RewardModelTrainer
 from .config import TrainerConfig, save_config
 from .logging_utils import ResultLogger
 from .registry import build_algorithm
