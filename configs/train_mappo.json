@@ -1,0 +1,57 @@
+{
+  "episodes": 250,
+  "seed": 0,
+  "env": {
+    "map_type": "medium",
+    "num_agents": 5,
+    "agent_view_range": 5,
+    "ep_length": 600,
+    "render": false,
+    "spawn_speed": "slow",
+    "metric": "Efficiency",
+    "penalty": false
+  },
+  "algorithm": {
+    "name": "mappo",
+    "mappo": {
+      "learning_rate": 0.0003,
+      "gamma": 0.99,
+      "gae_lambda": 0.95,
+      "clip_range": 0.2,
+      "ent_coef": 0.01,
+      "vf_coef": 0.5,
+      "n_steps": 2048,
+      "batch_size": 256,
+      "update_epochs": 4,
+      "hidden_size": 256,
+      "max_grad_norm": 0.5,
+      "normalize_obs": true,
+      "flatten_obs": false,
+      "device": "auto"
+    }
+  },
+  "logging": {
+    "log_dir": "logs",
+    "run_name": null,
+    "log_interval": 1,
+    "video_enabled": true,
+    "video_every_n_episodes": 100,
+    "video_max_steps": 600,
+    "video_fps": 10,
+    "video_keep_frames": false,
+    "log_agent_episode_details": true
+  },
+  "reward_model": {
+    "enabled": true,
+    "mode": "narrow_view",
+    "phi": "efficiency_x_peace",
+    "lr": 0.0001,
+    "batch_pairs": 64,
+    "train_steps_per_update": 50,
+    "update_every_env_steps": 1000,
+    "warmup_episodes": 50,
+    "max_episodes_in_buffer": 5000,
+    "device": "auto",
+    "save_every_episodes": 200
+  }
+}

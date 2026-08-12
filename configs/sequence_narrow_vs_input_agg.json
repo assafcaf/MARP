@@ -1,0 +1,103 @@
+[
+  {
+    "algo": "ippo",
+    "episodes": 300,
+    "map_type": "medium",
+    "agents": 5,
+    "reward_model": true,
+    "mode": "narrow_view",
+    "phi": "efficiency_x_sustainability",
+    "random_seed": true
+  },
+  {
+    "algo": "ippo",
+    "episodes": 300,
+    "map_type": "medium",
+    "agents": 5,
+    "reward_model": true,
+    "mode": "narrow_view",
+    "phi": "efficiency_x_sustainability",
+    "random_seed": true
+  },
+  {
+    "algo": "ippo",
+    "episodes": 300,
+    "map_type": "medium",
+    "agents": 5,
+    "reward_model": true,
+    "mode": "narrow_view",
+    "phi": "efficiency_x_sustainability",
+    "random_seed": true
+  },
+  {
+    "algo": "ippo",
+    "episodes": 300,
+    "map_type": "medium",
+    "agents": 5,
+    "reward_model": true,
+    "mode": "narrow_view",
+    "phi": "efficiency_x_sustainability",
+    "random_seed": true
+  },
+  {
+    "algo": "ippo",
+    "episodes": 300,
+    "map_type": "medium",
+    "agents": 5,
+    "reward_model": true,
+    "mode": "narrow_view",
+    "phi": "efficiency_x_sustainability",
+    "random_seed": true
+  },
+  {
+    "algo": "ippo",
+    "episodes": 300,
+    "map_type": "medium",
+    "agents": 5,
+    "reward_model": true,
+    "mode": "input_aggregation",
+    "phi": "efficiency_x_sustainability",
+    "random_seed": true
+  },
+  {
+    "algo": "ippo",
+    "episodes": 300,
+    "map_type": "medium",
+    "agents": 5,
+    "reward_model": true,
+    "mode": "input_aggregation",
+    "phi": "efficiency_x_sustainability",
+    "random_seed": true
+  },
+  {
+    "algo": "ippo",
+    "episodes": 300,
+    "map_type": "medium",
+    "agents": 5,
+    "reward_model": true,
+    "mode": "input_aggregation",
+    "phi": "efficiency_x_sustainability",
+    "random_seed": true
+  },
+  {
+    "algo": "ippo",
+    "episodes": 300,
+    "map_type": "medium",
+    "agents": 5,
+    "reward_model": true,
+    "mode": "input_aggregation",
+    "phi": "efficiency_x_sustainability",
+    "random_seed": true
+  },
+  {
+    "algo": "ippo",
+    "episodes": 300,
+    "map_type": "medium",
+    "agents": 5,
+    "reward_model": true,
+    "mode": "input_aggregation",
+    "phi": "efficiency_x_sustainability",
+    "random_seed": true
+  }
+]
+

@@ -1,0 +1,1 @@
+from .pettingzoo_env import parallel_env
