@@ -21,6 +21,6 @@ def _iter_module_names():
         yield ".".join(relative.parts)
 
 
-@pytest.mark.parametrize("module_name", _iter_module_names())
+@pytest.mark.parametrize("module_name", list(_iter_module_names()))
 def test_module_imports(module_name):
     importlib.import_module(module_name)
