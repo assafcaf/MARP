@@ -1,5 +1,6 @@
 """Orthogonal initialization must use layer-wise gains."""
 
+import inspect
 from unittest.mock import patch
 
 import numpy as np
@@ -60,3 +61,24 @@ def test_mappo_imports_orthogonal_init():
     assert hasattr(mappo, "orthogonal_init"), (
         "mappo.py should import orthogonal_init from ippo.py"
     )
+
+
+PPO_ADAM_EPS = 1e-5
+
+
+def test_ippo_optimizer_uses_ppo_adam_eps():
+    source = inspect.getsource(__import__("src.train.algorithms.ippo", fromlist=["x"]))
+    assert "eps=" in source, "IPPO's Adam should set eps explicitly"
+    assert str(PPO_ADAM_EPS) in source or "1e-5" in source
+
+
+def test_mappo_optimizer_uses_ppo_adam_eps():
+    source = inspect.getsource(__import__("src.train.algorithms.mappo", fromlist=["x"]))
+    assert "eps=" in source, "MAPPO's Adam should set eps explicitly"
+    assert str(PPO_ADAM_EPS) in source or "1e-5" in source
+
+
+def test_dqn_does_not_use_ppo_adam_eps():
+    """DQN keeps PyTorch's default 1e-8; SB3 does not override it for DQN."""
+    source = inspect.getsource(__import__("src.train.algorithms.dqn", fromlist=["x"]))
+    assert "1e-5" not in source

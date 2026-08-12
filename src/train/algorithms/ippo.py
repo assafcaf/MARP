@@ -261,6 +261,7 @@ class IPPOAlgorithm(Algorithm):
             optimizer = torch.optim.Adam(
                 list(actor.parameters()) + list(critic.parameters()),
                 lr=self.config.learning_rate,
+                eps=1e-5,  # PPO convention; PyTorch's 1e-8 default is less stable here
             )
 
             self.actors[agent_id] = actor
