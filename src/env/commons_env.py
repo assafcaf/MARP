@@ -80,6 +80,10 @@ class HarvestCommonsEnv(MapEnv):
         env_rewards = dict(rewards)
 
         for agent_id, _ in self.agents.items():
+            # infos[agent_id]['r'] is always the true environment reward; the
+            # returned `rewards` dict may instead carry the -1 FIRE penalty
+            # applied below. Consumers that need the unpenalized reward (e.g.
+            # social metrics, reward-model preference data) must read `r`.
             infos[agent_id]['r'] = env_rewards[agent_id]
             infos[agent_id]['fire'] = action[agent_id] == 7
             self.fire_counter += int(action[agent_id] == 7)
