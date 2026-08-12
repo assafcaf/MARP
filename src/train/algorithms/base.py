@@ -34,8 +34,5 @@ class Algorithm(ABC):
     def uses_external_loop(self) -> bool:
         return True
 
-    def train(self, env, logger, config) -> None:
-        raise NotImplementedError
-
     def save(self, path: str) -> None:
         return None

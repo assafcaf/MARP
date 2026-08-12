@@ -96,13 +96,6 @@ class Trainer:
         return img.astype(np.float32)
 
     def train(self) -> None:
-        if not self.algorithm.uses_external_loop():
-            video_recorder = self._build_video_recorder()
-            self.algorithm.train(self.env, self.logger, self.config, video_recorder)
-            video_recorder.finalize()
-            self.logger.close()
-            return
-
         # Set total episodes for algorithms that support entropy annealing
         if hasattr(self.algorithm, "set_total_episodes"):
             self.algorithm.set_total_episodes(self.config.episodes)
