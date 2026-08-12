@@ -31,6 +31,7 @@ class DQNConfig:
     train_after: int = 100
     train_every: int = 1
     target_update_freq: int = 200
+    max_grad_norm: float = 10.0
     normalize_obs: bool = True
     device: str = "auto"
 

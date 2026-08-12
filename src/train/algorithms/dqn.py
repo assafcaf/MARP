@@ -40,6 +40,7 @@ class DQNAgent:
         target_update_freq: int,
         train_after: int,
         train_every: int,
+        max_grad_norm: float,
         device: str = "auto",
     ):
         self.obs_shape = obs_shape
@@ -52,6 +53,7 @@ class DQNAgent:
         self.target_update_freq = target_update_freq
         self.train_after = train_after
         self.train_every = train_every
+        self.max_grad_norm = max_grad_norm
         self.replay = ReplayBuffer(replay_buffer_size)
         self.train_steps = 0
 
@@ -111,6 +113,7 @@ class DQNAgent:
 
         self.model.optimizer.zero_grad()
         loss.backward()
+        nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
         self.model.optimizer.step()
 
         if self.train_steps > 0 and self.train_steps % self.target_update_freq == 0:
@@ -147,6 +150,7 @@ class DQNAlgorithm(Algorithm):
                 target_update_freq=self.config.target_update_freq,
                 train_after=self.config.train_after,
                 train_every=self.config.train_every,
+                max_grad_norm=self.config.max_grad_norm,
                 device=self.config.device,
             )
 

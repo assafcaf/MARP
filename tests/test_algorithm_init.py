@@ -82,3 +82,15 @@ def test_dqn_does_not_use_ppo_adam_eps():
     """DQN keeps PyTorch's default 1e-8; SB3 does not override it for DQN."""
     source = inspect.getsource(__import__("src.train.algorithms.dqn", fromlist=["x"]))
     assert "1e-5" not in source
+
+
+def test_dqn_config_exposes_max_grad_norm():
+    from src.train.config import DQNConfig
+
+    assert hasattr(DQNConfig(), "max_grad_norm")
+    assert DQNConfig().max_grad_norm == 10.0, "SB3's DQN default is 10"
+
+
+def test_dqn_train_step_clips_gradients():
+    source = inspect.getsource(__import__("src.train.algorithms.dqn", fromlist=["x"]))
+    assert "clip_grad_norm_" in source, "DQN's train_step must clip gradients"
