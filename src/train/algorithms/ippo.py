@@ -21,6 +21,12 @@ def orthogonal_init(
     every preceding layer is trunk and receives ``trunk_gain``. Applying a small
     head gain uniformly -- as this function previously did -- drives the trunk's
     activations toward zero and leaves the network near-dead at initialization.
+
+    Head detection relies on ``module.modules()`` registration order matching
+    the network's forward order, so the last Linear/Conv2d layer encountered is
+    assumed to be the output head. A module that registers its head submodule
+    before its trunk (e.g. assigns ``self.head`` before ``self.conv``) would
+    have its gains silently inverted.
     """
     layers = [m for m in module.modules() if isinstance(m, (nn.Linear, nn.Conv2d))]
     for index, layer in enumerate(layers):
