@@ -90,13 +90,21 @@ class Trainer:
         """Format an observation for the reward model.
 
         Normalization must follow the *active* algorithm's setting so the reward
-        model sees inputs on the same scale as the policy does.
+        model sees inputs on the same scale as the policy does. Algorithms that
+        have no config section of their own (e.g. "random") fall back to the dqn
+        section's scale, which was the implicit default before per-algorithm
+        sections existed.
         """
         img = obs[agent_id]["curr_obs"]
         algorithm_cfg = getattr(self.config, "algorithm", None)
         normalize = False
         if algorithm_cfg is not None:
             active = getattr(algorithm_cfg, algorithm_cfg.name, None)
+            if active is None:
+                # Algorithms without a config section of their own (e.g. "random")
+                # keep the previous default scale so reward-model inputs stay
+                # consistent with the data the model was trained on.
+                active = algorithm_cfg.dqn
             normalize = getattr(active, "normalize_obs", False)
         if normalize:
             return (img / 255.0).astype(np.float32)
