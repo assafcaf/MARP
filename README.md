@@ -44,31 +44,76 @@ index (configured in `pyproject.toml`). To run on CPU or a different CUDA
 version, change the `torch` pin and the `[[tool.uv.index]]` URL, then re-run
 `uv sync`.
 
-## Training (configurable trainer)
+## Training
 
-The training entrypoint is `main.py`. Uncomment one of the template lines or use the
-inline script below.
-
-Template (edit `main.py`):
+Training is configured with [Hydra](https://hydra.cc/). Run with defaults:
 
 ```bash
-uv run python main.py
+uv run commons-game-train
 ```
 
-Inline run (example: `configs/train_dqn.json`):
+Override any value from the command line:
 
 ```bash
-uv run python - << 'PY'
-from commons_game_marp.train import Trainer, load_config
-
-config = load_config('configs/train_dqn.json')
-trainer = Trainer(config)
-trainer.train()
-print('done')
-PY
+uv run commons-game-train algorithm=ippo env=medium episodes=300 seed=7
+uv run commons-game-train reward_model=off env.penalty=true
+uv run commons-game-train algorithm=mappo algorithm.learning_rate=1e-4
 ```
 
-Logs are written to `logs/<run-name>/metrics.jsonl` and `logs/<run-name>/config.json`.
+Print the composed config without training:
+
+```bash
+uv run commons-game-train --cfg job
+```
+
+`uv run python main.py` is equivalent — `main.py` is a two-line shim over the
+same entry point.
+
+### Config groups
+
+Configs live in `src/commons_game_marp/configs/`, split into groups:
+
+| Group | Values | Selects |
+|---|---|---|
+| `env` | `small`, `medium` | Map size and agent count |
+| `algorithm` | `dqn`, `ippo`, `mappo`, `random` | Learner and its hyperparameters |
+| `reward_model` | `off`, `narrow_view`, `input_aggregation` | Preference-based reward modeling |
+| `logging` | `default` | Log directory, video capture |
+
+Top-level `episodes` and `seed` are set in `config.yaml` and overridable
+directly.
+
+### Experiment presets
+
+Named combinations live in `configs/experiment/` and are selected with a `+`:
+
+```bash
+uv run commons-game-train +experiment=mappo
+uv run commons-game-train +experiment=ippo episodes=500
+```
+
+### Sweeps
+
+`--multirun` (`-m`) runs the cross-product of comma-separated values
+sequentially:
+
+```bash
+# Three algorithms x three seeds = 9 runs
+uv run commons-game-train -m algorithm=dqn,ippo,mappo seed=0,1,2
+
+# Sweep a hyperparameter
+uv run commons-game-train -m algorithm=ippo algorithm.learning_rate=1e-3,3e-4,1e-4
+
+# Compare reward-model modes across five seeds
+uv run commons-game-train -m +experiment=sequence_narrow_vs_input_agg \
+    reward_model=narrow_view,input_aggregation seed=0,1,2,3,4
+```
+
+Multirun output is grouped under `logs/hydra/multirun/<timestamp>/`.
+
+### Outputs
+
+Logs are written to `logs/<run-name>/metrics.jsonl` and `logs/<run-name>/config.yaml`.
 Videos are written to `logs/<run-name>/videos/episode=XXXX.mp4`.
 TensorBoard logs are written to `logs/<run-name>/tensorboard/`.
 Extended agent episode information is written to `logs/<run-name>/extended_info/agent_X_episodes.csv`.
@@ -90,110 +135,22 @@ View TensorBoard (live during training):
 tensorboard --logdir logs
 ```
 
-Config tips:
+Config tips (each is a command-line override, e.g. `logging.video_enabled=false`):
 - `logging.video_every_n_episodes` defaults to 100; reduce it to record more frequently.
 - `logging.video_max_steps` caps episode length in videos.
 - `logging.video_enabled=false` disables video capture for faster training.
 - `logging.log_agent_episode_details=true` (default) enables detailed per-agent episode logging to separate files.
 - The last episode is always recorded (if video is enabled), regardless of `video_every_n_episodes`.
-- Example configs: `configs/train_dqn.json`, `configs/train_ippo.json`, `configs/train_mappo.json`.
+- Ready-made combinations: `+experiment=dqn`, `+experiment=ippo`, `+experiment=mappo`.
 
-## Run the environment script
+## Algorithms
 
-Use `scripts/run_env.py` to launch training with CLI overrides:
-
-```bash
-python scripts/run_env.py --algo mappo --episodes 200 --reward-model --mode narrow_view --phi efficiency_x_peace
-```
-
-Windows example:
+Select the learner with the `algorithm` group. Supported values: `dqn`,
+`random`, `ippo`, `mappo`.
 
 ```bash
-python scripts\run_env.py --algo mappo --episodes 200 --agents 5 --seed 0 --reward-model --mode narrow_view --phi efficiency_x_peace
+uv run commons-game-train algorithm=ippo
 ```
-
-Random seed example:
-
-```bash
-python scripts/run_env.py --algo dqn --episodes 100 --random-seed
-```
-
-Penalty example (with penalty for FIRE action):
-
-```bash
-python scripts/run_env.py --algo mappo --episodes 250 --random-seed --no-reward-model --penalty
-```
-
-### Running sequences of games
-
-You can run multiple games sequentially in several ways:
-
-**Multiple algorithms:**
-```bash
-python scripts/run_env.py --algo dqn ippo mappo --episodes 100
-```
-
-**Multiple maps:**
-```bash
-python scripts/run_env.py --algo dqn --map small large --episodes 100
-```
-
-**Multiple agent counts:**
-```bash
-python scripts/run_env.py --algo dqn --agents 3 5 7 --episodes 100
-```
-
-**Multiple seeds (including random):**
-```bash
-python scripts/run_env.py --algo dqn --seed 0 1 random 3 --episodes 100
-```
-This runs 4 games: seeds 0, 1, random, and 3.
-
-**All random seeds:**
-```bash
-python scripts/run_env.py --algo dqn ippo --random-seed --episodes 100
-```
-This runs 2 games, each with a different randomly generated seed.
-
-**All combinations:**
-```bash
-python scripts/run_env.py --algo dqn ippo --map small large --agents 3 5 --seed 0 1 --episodes 100
-```
-This will run all combinations: 2 algorithms × 2 maps × 2 agent counts × 2 seeds = 16 games total.
-
-**Using a sequence file:**
-Create a JSON file (e.g., `sequence.json`) with a list of game configurations:
-
-```json
-[
-  {"algo": "dqn", "episodes": 100, "map_type": "small", "agents": 3, "seed": 0},
-  {"algo": "ippo", "episodes": 200, "map_type": "large", "agents": 5, "reward_model": true, "seed": 1},
-  {"algo": "mappo", "episodes": 150, "map_type": "small", "agents": 7, "seed": null},
-  {"algo": "dqn", "episodes": 100, "map_type": "small", "agents": 3, "random_seed": true}
-]
-```
-Note: Use `"seed": null` or `"random_seed": true` in sequence files to use random seeds for that game.
-
-Then run:
-```bash
-python scripts/run_env.py --sequence-file sequence.json
-```
-
-Arguments:
-- `--algo {dqn,ippo,mappo,random}` selects the algorithm (default: dqn). Can specify multiple values to run sequentially.
-- `--episodes N` sets the number of training episodes.
-- `--seed N` sets the random seed(s) (integer or 'random'). Can specify multiple values to run sequentially (e.g., `--seed 0 1 random 3`). Use 'random' to generate a random seed for that specific game.
-- `--random-seed` uses a randomly generated seed for all games (overrides any `--seed` values). Each game will get a different random seed.
-- `--map NAME` sets `env.map_type`. Can specify multiple values to run sequentially.
-- `--agents N` sets `env.num_agents`. Can specify multiple values to run sequentially.
-- `--penalty` enables penalty for FIRE action (agents get -1 reward when using FIRE action). When disabled (default), FIRE action has no direct reward penalty.
-- `--reward-model` / `--no-reward-model` toggles reward modeling.
-- `--mode MODE` sets `reward_model.mode`.
-- `--phi PHI` sets `reward_model.phi`.
-- `--sequence-file PATH` path to JSON file containing a list of game configurations to run sequentially.
-
-Switch algorithms by changing `algorithm.name` in the config. Supported values:
-`dqn`, `random`, `ippo`, `mappo`.
 
 - **DQN**: Deep Q-Network for single or multi-agent (independent learners).
 - **IPPO**: Independent PPO - true decentralized training where all agents train simultaneously with their own policies. Each agent has independent actor and critic networks.
@@ -212,28 +169,32 @@ Key mechanics:
 - Reward model is trained via Bradley-Terry on trajectory pairs.
 - DQN/IPPO/MAPPO use the external loop and swap `rewards` with `r_hat` in `Trainer.train()`.
 
-Enable in config:
+Enable it by selecting a `reward_model` group value (`off` is the default):
 
-```json
-{
-  "reward_model": {
-    "enabled": true,
-    "mode": "narrow_view",
-    "phi": "efficiency_x_peace",
-    "lr": 0.0001,
-    "batch_pairs": 64,
-    "train_steps_per_update": 50,
-    "update_every_env_steps": 1000,
-    "warmup_episodes": 50,
-    "max_episodes_in_buffer": 5000,
-    "device": "auto",
-    "save_every_episodes": 200,
-    "use_amp": true,
-    "chunk_size": 512,
-    "max_steps_per_sequence": 256
-  }
-}
+```bash
+uv run commons-game-train reward_model=narrow_view
+uv run commons-game-train reward_model=input_aggregation reward_model.phi=efficiency_x_equality
 ```
+
+The `narrow_view` and `input_aggregation` presets set:
+
+```yaml
+enabled: true
+mode: narrow_view          # or input_aggregation
+phi: efficiency_x_peace
+lr: 0.0001
+batch_pairs: 64
+train_steps_per_update: 50
+update_every_env_steps: 1000
+warmup_episodes: 50
+max_episodes_in_buffer: 5000
+device: auto
+save_every_episodes: 200
+```
+
+`use_amp`, `chunk_size`, and `max_steps_per_sequence` take their schema defaults
+(`true`, `512`, `256`) and are overridable the same way, e.g.
+`reward_model.chunk_size=256`.
 
 ### Available phi functions
 
@@ -444,23 +405,15 @@ IPPO (Independent PPO) uses true decentralized training where all agents train
 simultaneously with their own learning policies. Each agent has independent actor
 and critic networks that use local observations only.
 
-```json
-{
-  "env": {"num_agents": 5},
-  "algorithm": {
-    "name": "ippo",
-    "ippo": {
-      "learning_rate": 0.0003,
-      "n_steps": 1024,
-      "batch_size": 256,
-      "update_epochs": 4,
-      "hidden_size": 256,
-      "flatten_obs": false,
-      "normalize_obs": false
-    }
-  }
-}
+```bash
+uv run commons-game-train algorithm=ippo env.num_agents=5 \
+    algorithm.learning_rate=0.0003 algorithm.n_steps=1024 \
+    algorithm.batch_size=256 algorithm.update_epochs=4 \
+    algorithm.hidden_size=256 algorithm.flatten_obs=false \
+    algorithm.normalize_obs=false
 ```
+
+Persistent changes go in `src/commons_game_marp/configs/algorithm/ippo.yaml`.
 
 Key differences from MAPPO:
 - **Decentralized critics**: Each agent's critic uses only its local observation (not global state).
@@ -470,20 +423,13 @@ Key differences from MAPPO:
 ## Running MAPPO
 
 MAPPO uses a shared actor and centralized critic over concatenated observations.
-Enable it by switching the algorithm name and configuring the `mappo` block:
+Enable it by selecting the `mappo` algorithm group:
 
-```json
-{
-  "env": {"num_agents": 5},
-  "algorithm": {
-    "name": "mappo",
-    "mappo": {
-      "n_steps": 1024,
-      "batch_size": 256,
-      "update_epochs": 4,
-      "flatten_obs": false,
-      "normalize_obs": true
-    }
-  }
-}
+```bash
+uv run commons-game-train algorithm=mappo env.num_agents=5 \
+    algorithm.n_steps=1024 algorithm.batch_size=256 \
+    algorithm.update_epochs=4 algorithm.flatten_obs=false \
+    algorithm.normalize_obs=true
 ```
+
+Persistent changes go in `src/commons_game_marp/configs/algorithm/mappo.yaml`.

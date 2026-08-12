@@ -23,6 +23,7 @@ abbreviations that never appear in the paper text.
 | [paper-and-configs.md](paper-and-configs.md) | Paper↔code terminology mapping, metric definitions (Efficiency/Equality/Sustainability/Peace), all 7 YAML configs mapped to `results/` naming |
 | [dead-code-audit.md](dead-code-audit.md) | File-by-file live/dead inventory, `__init__.py` export audit, repo hygiene |
 | [refactor-plan.md](refactor-plan.md) | **Start here for the refactor.** Decisions made, the `almogze/marp` fork adopted as the new base, its architecture, gaps found, and the recommended next steps |
+| [foundation-handoff.md](foundation-handoff.md) | What Plan 1 ("Foundation") delivered, the six human rulings made during its execution, corrections to the plan document, and carry-forward items for Plans 2-4 |
 
 ## 1. The live path, in one picture
 
