@@ -1,4 +1,4 @@
-from src.train import Trainer, load_config
+from commons_game_marp.train import Trainer, load_config
 
 
 def run_training(config_path: str) -> None:

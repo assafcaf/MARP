@@ -3,8 +3,8 @@
 import numpy as np
 import pytest
 
-from src.train.config import AlgorithmConfig, load_config
-from src.train.trainer import Trainer
+from commons_game_marp.train.config import AlgorithmConfig, load_config
+from commons_game_marp.train.trainer import Trainer
 
 
 class _ConfigStub:

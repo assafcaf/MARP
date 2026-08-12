@@ -13,10 +13,10 @@ import numpy as np
 import pytest
 import torch.nn as nn
 
-from src.train.algorithms.dqn import DQNAgent
-from src.train.algorithms.ippo import IPPOAlgorithm, orthogonal_init
-from src.train.algorithms.mappo import MAPPOAlgorithm
-from src.train.config import IPPOConfig, MAPPOConfig
+from commons_game_marp.train.algorithms.dqn import DQNAgent
+from commons_game_marp.train.algorithms.ippo import IPPOAlgorithm, orthogonal_init
+from commons_game_marp.train.algorithms.mappo import MAPPOAlgorithm
+from commons_game_marp.train.config import IPPOConfig, MAPPOConfig
 from tests.conftest import FakeEnv
 
 
@@ -66,7 +66,7 @@ def test_biases_are_zeroed():
 
 
 def test_dqn_config_exposes_max_grad_norm():
-    from src.train.config import DQNConfig
+    from commons_game_marp.train.config import DQNConfig
 
     assert hasattr(DQNConfig(), "max_grad_norm")
     assert DQNConfig().max_grad_norm == 10.0, "SB3's DQN default is 10"
@@ -224,7 +224,7 @@ def test_dqn_train_step_clips_gradients():
         agent.remember(obs, 0, 1.0, next_obs, False)
 
     with patch(
-        "src.train.algorithms.dqn.nn.utils.clip_grad_norm_",
+        "commons_game_marp.train.algorithms.dqn.nn.utils.clip_grad_norm_",
         wraps=nn.utils.clip_grad_norm_,
     ) as mock_clip:
         info = agent.train_step()

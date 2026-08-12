@@ -1,12 +1,9 @@
 import argparse
 import json
-import sys
 from pathlib import Path
 from typing import List
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
-from src.train import Trainer, load_config
+from commons_game_marp.train import Trainer, load_config
 
 DEFAULT_CONFIGS = {
     "dqn": "configs/train_dqn.json",

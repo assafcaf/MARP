@@ -1,11 +1,11 @@
-"""Every module in src/ must import cleanly."""
+"""Every module in the commons_game_marp package must import cleanly."""
 
 import importlib
 import pathlib
 
 import pytest
 
-SRC = pathlib.Path(__file__).resolve().parent.parent / "src"
+SRC = pathlib.Path(__file__).resolve().parent.parent / "src" / "commons_game_marp"
 
 
 def _iter_module_names():
