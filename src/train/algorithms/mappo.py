@@ -8,6 +8,7 @@ from torch import nn
 from torch.distributions import Categorical
 
 from .base import Algorithm
+from .ippo import orthogonal_init
 
 
 class RolloutBuffer:
@@ -194,6 +195,9 @@ class MAPPOAlgorithm(Algorithm):
             global_shape = (obs_shape[0], obs_shape[1], obs_shape[2] * num_agents)
             self.actor = CNNActor(obs_shape, self.num_actions).to(self.device)
             self.critic = CNNCritic(global_shape, num_agents).to(self.device)
+
+        orthogonal_init(self.actor, head_gain=0.01)
+        orthogonal_init(self.critic, head_gain=1.0)
 
         self.optimizer = torch.optim.Adam(
             list(self.actor.parameters()) + list(self.critic.parameters()),

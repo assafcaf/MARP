@@ -51,3 +51,12 @@ def test_biases_are_zeroed():
     for m in module.modules():
         if isinstance(m, (nn.Linear, nn.Conv2d)) and m.bias is not None:
             assert m.bias.abs().sum().item() == 0.0
+
+
+def test_mappo_imports_orthogonal_init():
+    """MAPPO must use the same initialization scheme as IPPO."""
+    import src.train.algorithms.mappo as mappo
+
+    assert hasattr(mappo, "orthogonal_init"), (
+        "mappo.py should import orthogonal_init from ippo.py"
+    )
