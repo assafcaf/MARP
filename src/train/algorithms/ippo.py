@@ -10,13 +10,24 @@ from torch.distributions import Categorical
 from .base import Algorithm
 
 
-def orthogonal_init(module: nn.Module, gain: float = 1.0) -> None:
-    """Apply orthogonal initialization to linear and conv layers."""
-    for m in module.modules():
-        if isinstance(m, (nn.Linear, nn.Conv2d)):
-            nn.init.orthogonal_(m.weight, gain=gain)
-            if m.bias is not None:
-                nn.init.zeros_(m.bias)
+def orthogonal_init(
+    module: nn.Module,
+    head_gain: float = 1.0,
+    trunk_gain: float = np.sqrt(2),
+) -> None:
+    """Orthogonally initialize a module with layer-wise gains.
+
+    The final Linear/Conv2d layer is the output head and receives ``head_gain``;
+    every preceding layer is trunk and receives ``trunk_gain``. Applying a small
+    head gain uniformly -- as this function previously did -- drives the trunk's
+    activations toward zero and leaves the network near-dead at initialization.
+    """
+    layers = [m for m in module.modules() if isinstance(m, (nn.Linear, nn.Conv2d))]
+    for index, layer in enumerate(layers):
+        is_head = index == len(layers) - 1
+        nn.init.orthogonal_(layer.weight, gain=head_gain if is_head else trunk_gain)
+        if layer.bias is not None:
+            nn.init.zeros_(layer.bias)
 
 
 class SingleAgentBuffer:
@@ -244,8 +255,8 @@ class IPPOAlgorithm(Algorithm):
                 critic = CNNCritic(self.obs_shape).to(self.device)
 
             # Apply orthogonal initialization for stable training
-            orthogonal_init(actor, gain=0.01)  # Small gain for policy head
-            orthogonal_init(critic, gain=1.0)
+            orthogonal_init(actor, head_gain=0.01)
+            orthogonal_init(critic, head_gain=1.0)
 
             optimizer = torch.optim.Adam(
                 list(actor.parameters()) + list(critic.parameters()),
