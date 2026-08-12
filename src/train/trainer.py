@@ -87,10 +87,17 @@ class Trainer:
         )
 
     def _format_reward_obs(self, obs: dict, agent_id: str) -> np.ndarray:
+        """Format an observation for the reward model.
+
+        Normalization must follow the *active* algorithm's setting so the reward
+        model sees inputs on the same scale as the policy does.
+        """
         img = obs[agent_id]["curr_obs"]
+        algorithm_cfg = getattr(self.config, "algorithm", None)
         normalize = False
-        if hasattr(self.config, "algorithm") and hasattr(self.config.algorithm, "dqn"):
-            normalize = getattr(self.config.algorithm.dqn, "normalize_obs", False)
+        if algorithm_cfg is not None:
+            active = getattr(algorithm_cfg, algorithm_cfg.name, None)
+            normalize = getattr(active, "normalize_obs", False)
         if normalize:
             return (img / 255.0).astype(np.float32)
         return img.astype(np.float32)
