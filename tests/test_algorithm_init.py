@@ -1,12 +1,23 @@
-"""Orthogonal initialization must use layer-wise gains."""
+"""Orthogonal initialization must use layer-wise gains, and PPO-family
+optimizers/DQN gradient clipping must be configured as intended.
 
-import inspect
+These tests assert on constructed objects (real tensors, real optimizer
+param groups, real mock-call arguments) rather than on module source text or
+module attributes, so a future refactor that silently drops or misindents
+the behavior they guard will actually fail the suite.
+"""
+
 from unittest.mock import patch
 
 import numpy as np
+import pytest
 import torch.nn as nn
 
-from src.train.algorithms.ippo import orthogonal_init
+from src.train.algorithms.dqn import DQNAgent
+from src.train.algorithms.ippo import IPPOAlgorithm, orthogonal_init
+from src.train.algorithms.mappo import MAPPOAlgorithm
+from src.train.config import IPPOConfig, MAPPOConfig
+from tests.conftest import FakeEnv
 
 
 def _three_layer_module() -> nn.Module:
@@ -54,36 +65,6 @@ def test_biases_are_zeroed():
             assert m.bias.abs().sum().item() == 0.0
 
 
-def test_mappo_imports_orthogonal_init():
-    """MAPPO must use the same initialization scheme as IPPO."""
-    import src.train.algorithms.mappo as mappo
-
-    assert hasattr(mappo, "orthogonal_init"), (
-        "mappo.py should import orthogonal_init from ippo.py"
-    )
-
-
-PPO_ADAM_EPS = 1e-5
-
-
-def test_ippo_optimizer_uses_ppo_adam_eps():
-    source = inspect.getsource(__import__("src.train.algorithms.ippo", fromlist=["x"]))
-    assert "eps=" in source, "IPPO's Adam should set eps explicitly"
-    assert str(PPO_ADAM_EPS) in source or "1e-5" in source
-
-
-def test_mappo_optimizer_uses_ppo_adam_eps():
-    source = inspect.getsource(__import__("src.train.algorithms.mappo", fromlist=["x"]))
-    assert "eps=" in source, "MAPPO's Adam should set eps explicitly"
-    assert str(PPO_ADAM_EPS) in source or "1e-5" in source
-
-
-def test_dqn_does_not_use_ppo_adam_eps():
-    """DQN keeps PyTorch's default 1e-8; SB3 does not override it for DQN."""
-    source = inspect.getsource(__import__("src.train.algorithms.dqn", fromlist=["x"]))
-    assert "1e-5" not in source
-
-
 def test_dqn_config_exposes_max_grad_norm():
     from src.train.config import DQNConfig
 
@@ -91,6 +72,165 @@ def test_dqn_config_exposes_max_grad_norm():
     assert DQNConfig().max_grad_norm == 10.0, "SB3's DQN default is 10"
 
 
+# ---------------------------------------------------------------------------
+# MAPPO orthogonal initialization: real tensors, both flatten_obs branches.
+#
+# `MAPPOAlgorithm.on_env_ready` calls `orthogonal_init(actor, head_gain=0.01)`
+# and `orthogonal_init(critic, head_gain=1.0)`. The predecessor test only
+# asserted `hasattr(mappo, "orthogonal_init")`, which would still pass if
+# those two calls were deleted, mis-indented into only one of the two obs
+# branches, or had their gains swapped -- exactly the kind of regression a
+# future parameter-sharing refactor of this block could introduce silently
+# (no error, just a worse learning curve, invisible without a training run).
+#
+# For an orthogonally-initialized weight tensor flattened to (rows, cols),
+# nn.init.orthogonal_ makes either the rows or the columns exactly
+# orthonormal (whichever axis is smaller), scaled by `gain`. Either way,
+# trace(W @ W.T) == gain**2 * min(rows, cols) exactly (up to QR float
+# precision), so mean(row_norm**2) == gain**2 * min(rows, cols) / rows is an
+# exact, closed-form quantity that holds for both Linear (2D) and Conv2d
+# (4D, flattened to (out_channels, in_channels*kh*kw)) layers alike --
+# verified numerically against the real network shapes before writing this
+# assertion (e.g. a (32, 3, 3, 3) Conv2d with gain sqrt(2) gives exactly
+# 1.6875, matching the reviewer's independently measured value).
+# ---------------------------------------------------------------------------
+
+
+def _mean_row_norm_sq(layer: nn.Module) -> float:
+    weight = layer.weight.detach()
+    rows = weight.shape[0]
+    flat = weight.reshape(rows, -1)
+    return float((flat ** 2).sum() / rows)
+
+
+def _expected_mean_row_norm_sq(layer: nn.Module, gain: float) -> float:
+    weight = layer.weight.detach()
+    rows = weight.shape[0]
+    cols = weight.numel() // rows
+    return gain ** 2 * min(rows, cols) / rows
+
+
+def _assert_layer_wise_gains(net: nn.Module, head_gain: float, trunk_gain: float) -> None:
+    layers = [m for m in net.modules() if isinstance(m, (nn.Linear, nn.Conv2d))]
+    assert len(layers) >= 2, f"{net.__class__.__name__} should have trunk + head layers"
+    for index, layer in enumerate(layers):
+        gain = head_gain if index == len(layers) - 1 else trunk_gain
+        actual = _mean_row_norm_sq(layer)
+        expected = _expected_mean_row_norm_sq(layer, gain)
+        assert actual == pytest.approx(expected, rel=1e-3), (
+            f"{net.__class__.__name__} layer {index} ({layer}) does not match "
+            f"gain {gain}: mean row-norm^2 = {actual}, expected {expected}"
+        )
+
+
+@pytest.mark.parametrize("flatten_obs", [True, False])
+def test_mappo_orthogonal_init_applies_layer_wise_gains(flatten_obs):
+    config = MAPPOConfig(flatten_obs=flatten_obs)
+    algo = MAPPOAlgorithm(config)
+    algo.on_env_ready(FakeEnv())
+
+    _assert_layer_wise_gains(algo.actor, head_gain=0.01, trunk_gain=np.sqrt(2))
+    _assert_layer_wise_gains(algo.critic, head_gain=1.0, trunk_gain=np.sqrt(2))
+
+
+@pytest.mark.parametrize("flatten_obs", [True, False])
+def test_ippo_orthogonal_init_applies_layer_wise_gains(flatten_obs):
+    """Same guard as above, for IPPO's per-agent actor/critic networks."""
+    config = IPPOConfig(flatten_obs=flatten_obs)
+    algo = IPPOAlgorithm(config)
+    algo.on_env_ready(FakeEnv())
+
+    for agent_id in algo.agent_ids:
+        _assert_layer_wise_gains(algo.actors[agent_id], head_gain=0.01, trunk_gain=np.sqrt(2))
+        _assert_layer_wise_gains(algo.critics[agent_id], head_gain=1.0, trunk_gain=np.sqrt(2))
+
+
+# ---------------------------------------------------------------------------
+# PPO-family Adam eps: read back the real optimizer's param groups.
+# ---------------------------------------------------------------------------
+
+
+def test_ippo_optimizer_uses_ppo_adam_eps():
+    config = IPPOConfig()
+    algo = IPPOAlgorithm(config)
+    algo.on_env_ready(FakeEnv())
+
+    for optimizer in algo.optimizers.values():
+        assert optimizer.param_groups[0]["eps"] == 1e-5
+
+
+def test_mappo_optimizer_uses_ppo_adam_eps():
+    config = MAPPOConfig()
+    algo = MAPPOAlgorithm(config)
+    algo.on_env_ready(FakeEnv())
+
+    assert algo.optimizer.param_groups[0]["eps"] == 1e-5
+
+
+def test_dqn_does_not_use_ppo_adam_eps():
+    """DQN keeps PyTorch's default 1e-8; SB3 does not override it for DQN."""
+    agent = DQNAgent(
+        obs_shape=(15, 15, 3),
+        num_actions=8,
+        learning_rate=1e-3,
+        gamma=0.99,
+        epsilon_start=1.0,
+        epsilon_end=0.1,
+        epsilon_decay=0.995,
+        batch_size=4,
+        replay_buffer_size=100,
+        target_update_freq=200,
+        train_after=100,
+        train_every=1,
+        max_grad_norm=10.0,
+        device="cpu",
+    )
+    assert agent.model.optimizer.param_groups[0]["eps"] == 1e-8
+
+
+# ---------------------------------------------------------------------------
+# DQN gradient clipping: spy on clip_grad_norm_ during a real train_step().
+# ---------------------------------------------------------------------------
+
+
 def test_dqn_train_step_clips_gradients():
-    source = inspect.getsource(__import__("src.train.algorithms.dqn", fromlist=["x"]))
-    assert "clip_grad_norm_" in source, "DQN's train_step must clip gradients"
+    """`patch` wraps the real `clip_grad_norm_` (via `wraps=`) rather than
+    replacing it, so gradients are still actually clipped during the step --
+    this asserts both that clipping is invoked AND with what max_norm,
+    without disabling the clipping it's supposed to be testing.
+    """
+    max_grad_norm = 0.5
+    batch_size = 4
+    agent = DQNAgent(
+        obs_shape=(15, 15, 3),
+        num_actions=8,
+        learning_rate=1e-3,
+        gamma=0.99,
+        epsilon_start=1.0,
+        epsilon_end=0.1,
+        epsilon_decay=0.995,
+        batch_size=batch_size,
+        replay_buffer_size=100,
+        target_update_freq=200,
+        train_after=batch_size,
+        train_every=1,
+        max_grad_norm=max_grad_norm,
+        device="cpu",
+    )
+
+    obs = np.zeros((15, 15, 3), dtype=np.float32)
+    next_obs = np.zeros((15, 15, 3), dtype=np.float32)
+    for _ in range(batch_size):
+        agent.remember(obs, 0, 1.0, next_obs, False)
+
+    with patch(
+        "src.train.algorithms.dqn.nn.utils.clip_grad_norm_",
+        wraps=nn.utils.clip_grad_norm_,
+    ) as mock_clip:
+        info = agent.train_step()
+
+    assert info, "train_step should have run given enough transitions"
+    mock_clip.assert_called_once()
+    call = mock_clip.call_args
+    called_max_norm = call.args[1] if len(call.args) > 1 else call.kwargs.get("max_norm")
+    assert called_max_norm == max_grad_norm
