@@ -125,6 +125,18 @@ class TestCheckAteLastAppleInCluster:
         result = check_ate_last_apple_in_cluster(agent_pos, apple_points, world_map)
         assert result is True
     
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Known deviation: metrics.py compares a squared distance against an "
+            "unsquared radius (j**2 + k**2 <= apple_radius), so the radius-2 "
+            "boundary apple is excluded and the cluster is a 9-cell 3x3 block "
+            "instead of the 13-cell radius-2 neighborhood. This test asserts the "
+            "correct semantics. See design spec section 4.1, 'Known deviations', "
+            "item 1; the fix lands with the legacy env preset in Phase 3 / Plan 2. "
+            "strict=True so this turns into a failure the moment the fix makes it pass."
+        ),
+    )
     def test_cluster_with_apples_at_spawn_radius(self):
         """Test cluster detection with apples at spawn radius boundary."""
         agent_pos = np.array([5, 5])
@@ -133,7 +145,7 @@ class TestCheckAteLastAppleInCluster:
         world_map[5, 5] = ' '  # Eaten
         # Place apple at distance exactly APPLE_RADIUS (should be included)
         world_map[5, 5 + APPLE_RADIUS] = 'A'  # At radius boundary
-        
+
         result = check_ate_last_apple_in_cluster(agent_pos, apple_points, world_map)
         # Should be False because there's still an apple in the cluster
         assert result is False

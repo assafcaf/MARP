@@ -8,7 +8,7 @@ This module provides functions to calculate agent-specific metrics such as:
 
 import numpy as np
 from typing import Tuple, Dict, Any
-from src.env.commons_env import APPLE_RADIUS
+from ..env.commons_env import APPLE_RADIUS
 
 
 def count_nearby_apples(agent_view: np.ndarray, view_center_row: int, view_center_col: int, radius: int = 2) -> int:

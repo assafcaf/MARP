@@ -1,7 +1,7 @@
 import os
 from typing import Optional
 
-from src.env.utils import utility_funcs
+from ..env.utils import utility_funcs
 
 
 class VideoRecorder:

@@ -3,10 +3,10 @@ import random
 import time
 import numpy as np
 
-from src.env.commons_env import HarvestCommonsEnv, MAP
-from src.reward_model.preference_buffer import EpisodeRecord, PreferenceBuffer
-from src.reward_model.reward_model import RewardModel
-from src.reward_model.reward_trainer import RewardModelTrainer
+from ..env.commons_env import HarvestCommonsEnv, MAP
+from ..reward_model.preference_buffer import EpisodeRecord, PreferenceBuffer
+from ..reward_model.reward_model import RewardModel
+from ..reward_model.reward_trainer import RewardModelTrainer
 from .config import TrainerConfig, save_config
 from .logging_utils import ResultLogger
 from .registry import build_algorithm
@@ -96,13 +96,6 @@ class Trainer:
         return img.astype(np.float32)
 
     def train(self) -> None:
-        if not self.algorithm.uses_external_loop():
-            video_recorder = self._build_video_recorder()
-            self.algorithm.train(self.env, self.logger, self.config, video_recorder)
-            video_recorder.finalize()
-            self.logger.close()
-            return
-
         # Set total episodes for algorithms that support entropy annealing
         if hasattr(self.algorithm, "set_total_episodes"):
             self.algorithm.set_total_episodes(self.config.episodes)
