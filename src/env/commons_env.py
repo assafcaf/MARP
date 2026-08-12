@@ -72,14 +72,25 @@ class HarvestCommonsEnv(MapEnv):
 
     def step(self, action):
         observations, rewards, dones, infos = super().step(action)
+
+        # Social metrics must reflect true environment rewards, so record them
+        # before the FIRE penalty is applied. Applying the penalty first would
+        # corrupt efficiency and equality -- the same quantities the reward
+        # model is trained to predict.
+        env_rewards = dict(rewards)
+
         for agent_id, _ in self.agents.items():
-            infos[agent_id]['r'] = rewards[agent_id]
+            infos[agent_id]['r'] = env_rewards[agent_id]
             infos[agent_id]['fire'] = action[agent_id] == 7
             self.fire_counter += int(action[agent_id] == 7)
-            # Apply penalty for FIRE action if enabled
-            if self.penalty and action[agent_id] == 7:
-                rewards[agent_id] = -1
-        self.update_social_metrics(rewards)
+
+        self.update_social_metrics(env_rewards)
+
+        if self.penalty:
+            for agent_id, _ in self.agents.items():
+                if action[agent_id] == 7:
+                    rewards[agent_id] = -1
+
         return observations, rewards, dones, infos
 
     def setup_agents(self):
