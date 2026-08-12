@@ -50,3 +50,18 @@ def test_unknown_key_is_rejected():
     """Structured configs mean a typo is a startup error, not a silent default."""
     with pytest.raises(Exception):
         _compose("algorithm.lerning_rate=0.1")
+
+
+def test_config_snapshot_round_trips(tmp_path):
+    """The config.yaml written into each run directory must load back into an
+    equivalent config -- it is the record of what a run actually used."""
+    from omegaconf import OmegaConf
+
+    config = _compose("algorithm=ippo", "env=medium")
+    path = tmp_path / "config.yaml"
+    OmegaConf.save(OmegaConf.structured(config), path)
+
+    reloaded = OmegaConf.load(path)
+    assert OmegaConf.to_container(reloaded) == OmegaConf.to_container(
+        OmegaConf.structured(config)
+    )

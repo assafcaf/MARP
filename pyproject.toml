@@ -16,6 +16,9 @@ dependencies = [
     "hydra-core>=1.3,<2.0",
 ]
 
+[project.scripts]
+commons-game-train = "commons_game_marp.cli:main"
+
 [dependency-groups]
 dev = [
     "pytest",
