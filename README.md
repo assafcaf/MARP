@@ -6,13 +6,43 @@ Agents move on an ASCII map, collect apples for reward, and can optionally use a
 efficiency, equality, sustainability, and peace.
 
 Key pieces:
-- `src/env/commons_env.py`: Harvest commons environment (`HarvestCommonsEnv`).
-- `src/env/map_env.py`: Core map simulation, movement, and rendering.
-- `src/env/commons_agent.py`: Agent behavior and action space.
-- `src/env/maps.py`: ASCII map layouts used for spawning walls/apples/agents.
-- `src/reward_model/`: MARP-style preference-based reward model and training utilities.
-- `src/train/metrics.py`: Agent-specific metrics calculation (nearby apples, cluster detection).
+- `src/commons_game_marp/env/commons_env.py`: Harvest commons environment (`HarvestCommonsEnv`).
+- `src/commons_game_marp/env/map_env.py`: Core map simulation, movement, and rendering.
+- `src/commons_game_marp/env/commons_agent.py`: Agent behavior and action space.
+- `src/commons_game_marp/env/maps.py`: ASCII map layouts used for spawning walls/apples/agents.
+- `src/commons_game_marp/reward_model/`: MARP-style preference-based reward model and training utilities.
+- `src/commons_game_marp/train/metrics.py`: Agent-specific metrics calculation (nearby apples, cluster detection).
 - `scripts/plot_phi_comparisons.py`: Phi comparison plots and NV vs IA social metrics galleries.
+
+## Installation
+
+This project is a Python package managed with [uv](https://docs.astral.sh/uv/).
+
+```bash
+# Install uv (once, if you don't have it)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create the environment and install the project with all dependencies
+uv sync
+```
+
+`uv sync` reads `pyproject.toml` and `uv.lock`, creates `.venv/`, and installs
+`commons-game-marp` in editable mode — edits to `src/commons_game_marp/` take
+effect without reinstalling.
+
+Prefix commands with `uv run` to use the project environment:
+
+```bash
+uv run pytest              # run the test suite
+uv run python main.py      # run training
+```
+
+### PyTorch and CUDA
+
+The pinned build is `torch==2.5.1+cu124`, resolved from PyTorch's CUDA 12.4
+index (configured in `pyproject.toml`). To run on CPU or a different CUDA
+version, change the `torch` pin and the `[[tool.uv.index]]` URL, then re-run
+`uv sync`.
 
 ## Training (configurable trainer)
 
@@ -22,16 +52,14 @@ inline script below.
 Template (edit `main.py`):
 
 ```bash
-python main.py
+uv run python main.py
 ```
 
 Inline run (example: `configs/train_dqn.json`):
 
 ```bash
-python - << 'PY'
-import sys
-sys.path.append('src')
-from train import Trainer, load_config
+uv run python - << 'PY'
+from commons_game_marp.train import Trainer, load_config
 
 config = load_config('configs/train_dqn.json')
 trainer = Trainer(config)
