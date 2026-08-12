@@ -1,7 +1,7 @@
 """The FIRE penalty must not leak into the social metrics."""
 
-from src.env.commons_env import HarvestCommonsEnv
-from src.env.maps import SMALL_HARVEST_MAP
+from commons_game_marp.env.commons_env import HarvestCommonsEnv
+from commons_game_marp.env.maps import SMALL_HARVEST_MAP
 
 FIRE_ACTION = 7
 STAND_STILL = 4

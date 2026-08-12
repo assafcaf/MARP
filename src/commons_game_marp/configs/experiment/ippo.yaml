@@ -1,0 +1,10 @@
+# @package _global_
+defaults:
+  - override /env: medium
+  - override /algorithm: ippo
+  - override /reward_model: narrow_view
+
+episodes: 200
+seed: 0
+logging:
+  video_every_n_episodes: 500

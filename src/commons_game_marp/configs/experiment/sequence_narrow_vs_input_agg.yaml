@@ -1,0 +1,13 @@
+# @package _global_
+# The reward_model and seed axes are swept from the CLI:
+#   uv run commons-game-train -m +experiment=sequence_narrow_vs_input_agg \
+#       reward_model=narrow_view,input_aggregation seed=0,1,2,3,4
+defaults:
+  - override /env: medium
+  - override /algorithm: ippo
+  - override /reward_model: narrow_view
+
+episodes: 300
+seed: 0
+reward_model:
+  phi: efficiency_x_sustainability

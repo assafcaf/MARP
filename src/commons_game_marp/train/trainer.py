@@ -2,12 +2,13 @@ import os
 import random
 import time
 import numpy as np
+from omegaconf import OmegaConf
 
 from ..env.commons_env import HarvestCommonsEnv, MAP
 from ..reward_model.preference_buffer import EpisodeRecord, PreferenceBuffer
 from ..reward_model.reward_model import RewardModel
 from ..reward_model.reward_trainer import RewardModelTrainer
-from .config import TrainerConfig, save_config
+from .config import TrainerConfig
 from .logging_utils import ResultLogger
 from .registry import build_algorithm
 from .video_utils import VideoRecorder
@@ -67,8 +68,8 @@ class Trainer:
         if self.config.seed is not None:
             run_name = f"{run_name}-seed={self.config.seed}"
         logger = ResultLogger(log_cfg.log_dir, run_name)
-        config_path = os.path.join(logger.run_dir, "config.json")
-        save_config(config_path, self.config)
+        config_path = os.path.join(logger.run_dir, "config.yaml")
+        OmegaConf.save(OmegaConf.structured(self.config), config_path)
         print(f"Using random seed: {self.config.seed}")
         return logger
 
@@ -89,23 +90,13 @@ class Trainer:
     def _format_reward_obs(self, obs: dict, agent_id: str) -> np.ndarray:
         """Format an observation for the reward model.
 
-        Normalization must follow the *active* algorithm's setting so the reward
-        model sees inputs on the same scale as the policy does. Algorithms that
-        have no config section of their own (e.g. "random") fall back to the dqn
-        section's scale, which was the implicit default before per-algorithm
-        sections existed.
+        Normalization follows the selected algorithm's setting so the reward
+        model sees inputs on the same scale as the policy does. Every algorithm
+        node declares `normalize_obs`, including `random`.
         """
         img = obs[agent_id]["curr_obs"]
         algorithm_cfg = getattr(self.config, "algorithm", None)
-        normalize = False
-        if algorithm_cfg is not None:
-            active = getattr(algorithm_cfg, algorithm_cfg.name, None)
-            if active is None:
-                # Algorithms without a config section of their own (e.g. "random")
-                # keep the previous default scale so reward-model inputs stay
-                # consistent with the data the model was trained on.
-                active = algorithm_cfg.dqn
-            normalize = getattr(active, "normalize_obs", False)
+        normalize = getattr(algorithm_cfg, "normalize_obs", False)
         if normalize:
             return (img / 255.0).astype(np.float32)
         return img.astype(np.float32)

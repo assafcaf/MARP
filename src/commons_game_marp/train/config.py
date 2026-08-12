@@ -1,6 +1,7 @@
-import json
 from dataclasses import dataclass, field
-from typing import Any, Dict, Optional
+from typing import Any, Optional
+
+from omegaconf import MISSING
 
 
 @dataclass
@@ -14,13 +15,10 @@ class EnvConfig:
     metric: str = "Efficiency"
     penalty: bool = False
 
-    @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "EnvConfig":
-        return EnvConfig(**data)
-
 
 @dataclass
 class DQNConfig:
+    name: str = "dqn"
     learning_rate: float = 1e-3
     gamma: float = 0.99
     epsilon_start: float = 1.0
@@ -35,13 +33,10 @@ class DQNConfig:
     normalize_obs: bool = True
     device: str = "auto"
 
-    @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "DQNConfig":
-        return DQNConfig(**data)
-
 
 @dataclass
 class IPPOConfig:
+    name: str = "ippo"
     learning_rate: float = 3e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -59,13 +54,10 @@ class IPPOConfig:
     flatten_obs: bool = False
     device: str = "auto"
 
-    @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "IPPOConfig":
-        return IPPOConfig(**data)
-
 
 @dataclass
 class MAPPOConfig:
+    name: str = "mappo"
     learning_rate: float = 3e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95
@@ -81,29 +73,17 @@ class MAPPOConfig:
     flatten_obs: bool = False
     device: str = "auto"
 
-    @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "MAPPOConfig":
-        return MAPPOConfig(**data)
-
 
 @dataclass
-class AlgorithmConfig:
-    name: str = "dqn"
-    dqn: DQNConfig = field(default_factory=DQNConfig)
-    ippo: IPPOConfig = field(default_factory=IPPOConfig)
-    mappo: MAPPOConfig = field(default_factory=MAPPOConfig)
+class RandomConfig:
+    """The random policy has no hyperparameters, but `normalize_obs` must be
+    declared: `_format_reward_obs` reads it off the selected algorithm node with
+    no fallback. True preserves the previous behavior, where `random` borrowed
+    the dqn section's scale."""
 
-    @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "AlgorithmConfig":
-        dqn = DQNConfig.from_dict(data.get("dqn", {}))
-        ippo = IPPOConfig.from_dict(data.get("ippo", {}))
-        mappo = MAPPOConfig.from_dict(data.get("mappo", {}))
-        return AlgorithmConfig(
-            name=data.get("name", "dqn"),
-            dqn=dqn,
-            ippo=ippo,
-            mappo=mappo,
-        )
+    name: str = "random"
+    normalize_obs: bool = True
+    device: str = "auto"
 
 
 @dataclass
@@ -117,10 +97,6 @@ class LoggingConfig:
     video_fps: int = 10
     video_keep_frames: bool = False
     log_agent_episode_details: bool = True
-
-    @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "LoggingConfig":
-        return LoggingConfig(**data)
 
 
 @dataclass
@@ -141,51 +117,35 @@ class RewardModelConfig:
     chunk_size: int = 512  # Max steps per forward pass chunk (memory control)
     max_steps_per_sequence: Optional[int] = 256  # Temporal subsampling limit (None = no limit)
 
-    @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "RewardModelConfig":
-        return RewardModelConfig(**data)
-
 
 @dataclass
 class TrainerConfig:
     episodes: int = 100
     seed: Optional[int] = 0
     env: EnvConfig = field(default_factory=EnvConfig)
-    algorithm: AlgorithmConfig = field(default_factory=AlgorithmConfig)
+    # `Any` rather than a union type: Hydra selects one of the four algorithm
+    # nodes into this slot via the `algorithm` config group, and each node has a
+    # different shape. The selected node is validated against its own schema.
+    algorithm: Any = MISSING
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     reward_model: RewardModelConfig = field(default_factory=RewardModelConfig)
 
-    @staticmethod
-    def from_dict(data: Dict[str, Any]) -> "TrainerConfig":
-        return TrainerConfig(
-            episodes=data.get("episodes", 100),
-            seed=data.get("seed", 0) if "seed" in data else None,
-            env=EnvConfig.from_dict(data.get("env", {})),
-            algorithm=AlgorithmConfig.from_dict(data.get("algorithm", {})),
-            logging=LoggingConfig.from_dict(data.get("logging", {})),
-            reward_model=RewardModelConfig.from_dict(data.get("reward_model", {})),
-        )
 
+def register_configs() -> None:
+    """Register the schema for every config group with Hydra.
 
-def load_config(path: str) -> TrainerConfig:
-    with open(path, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    return TrainerConfig.from_dict(data)
+    Registering the dataclasses makes the YAML type-checked at composition
+    time: an unknown or mistyped key fails at startup instead of silently
+    falling back to a default. Safe to call more than once.
+    """
+    from hydra.core.config_store import ConfigStore
 
-
-def save_config(path: str, config: TrainerConfig) -> None:
-    payload = {
-        "episodes": config.episodes,
-        "seed": config.seed if config.seed is not None else None,
-        "env": config.env.__dict__,
-        "algorithm": {
-            "name": config.algorithm.name,
-            "dqn": config.algorithm.dqn.__dict__,
-            "ippo": config.algorithm.ippo.__dict__,
-            "mappo": config.algorithm.mappo.__dict__,
-        },
-        "logging": config.logging.__dict__,
-        "reward_model": config.reward_model.__dict__,
-    }
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, sort_keys=True)
+    cs = ConfigStore.instance()
+    cs.store(name="base_config", node=TrainerConfig)
+    cs.store(group="env", name="base_env", node=EnvConfig)
+    cs.store(group="algorithm", name="base_dqn", node=DQNConfig)
+    cs.store(group="algorithm", name="base_ippo", node=IPPOConfig)
+    cs.store(group="algorithm", name="base_mappo", node=MAPPOConfig)
+    cs.store(group="algorithm", name="base_random", node=RandomConfig)
+    cs.store(group="logging", name="base_logging", node=LoggingConfig)
+    cs.store(group="reward_model", name="base_reward_model", node=RewardModelConfig)

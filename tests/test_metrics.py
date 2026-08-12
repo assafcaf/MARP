@@ -5,12 +5,12 @@ Tests for the metrics calculation module.
 import numpy as np
 import pytest
 from unittest.mock import Mock
-from src.train.metrics import (
+from commons_game_marp.train.metrics import (
     count_nearby_apples,
     check_ate_last_apple_in_cluster,
     compute_agent_step_metrics,
 )
-from src.env.commons_env import APPLE_RADIUS
+from commons_game_marp.env.commons_env import APPLE_RADIUS
 
 
 class TestCountNearbyApples:
