@@ -1,0 +1,23 @@
+# Composition root. Override any group from the CLI:
+#   uv run commons-game-train algorithm=ippo env=medium reward_model=off
+defaults:
+  - base_config
+  - env: medium
+  - algorithm: mappo
+  - reward_model: "off"
+  - logging: default
+  - _self_
+
+episodes: 100
+seed: 0
+
+hydra:
+  # Keep the process CWD at the repo root so `logging.log_dir: logs` and the
+  # plotting scripts resolve the same paths they always have.
+  job:
+    chdir: false
+  run:
+    dir: ${logging.log_dir}/hydra/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: ${logging.log_dir}/hydra/multirun/${now:%Y-%m-%d_%H-%M-%S}
+    subdir: ${hydra.job.num}

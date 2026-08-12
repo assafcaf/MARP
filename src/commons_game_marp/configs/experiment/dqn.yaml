@@ -1,0 +1,13 @@
+# @package _global_
+defaults:
+  - override /env: small
+  - override /algorithm: dqn
+  - override /reward_model: narrow_view
+
+episodes: 250
+seed: 0
+env:
+  # train_dqn.json ran 5 agents on the small map; env/small.yaml defaults to 1.
+  num_agents: 5
+logging:
+  video_every_n_episodes: 80

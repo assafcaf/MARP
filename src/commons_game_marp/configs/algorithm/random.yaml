@@ -1,0 +1,6 @@
+defaults:
+  - base_random
+
+name: random
+normalize_obs: true
+device: auto
