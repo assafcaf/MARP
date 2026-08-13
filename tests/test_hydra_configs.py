@@ -153,3 +153,17 @@ def test_example_experiment_does_not_claim_mappo_lacks_ent_coef_end():
         text = handle.read()
 
     assert "MAPPO has no ent_coef_end" not in text
+
+
+def test_detailed_metrics_switches_have_defaults():
+    """The diagnostics ship on; the histograms, which are far larger on disk
+    than a scalar, ship off."""
+    config = _compose("algorithm=random")
+    assert config.logging.detailed_metrics is True
+    assert config.logging.nearby_apple_radius == 2
+    assert config.logging.histogram_every_n_episodes == 0
+
+
+def test_detailed_metrics_can_be_turned_off_from_the_command_line():
+    config = _compose("algorithm=random", "logging.detailed_metrics=false")
+    assert config.logging.detailed_metrics is False

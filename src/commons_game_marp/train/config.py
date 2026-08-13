@@ -139,6 +139,18 @@ class LoggingConfig:
     video_fps: int = 10
     video_keep_frames: bool = False
     log_agent_episode_details: bool = True
+    # Action distribution, harvest behaviour and the step-level reward-model
+    # breakdowns (`action/*`, `harvest/*`, `rm_*`). The cost is one stencil
+    # gather per agent per environment per step; turning this off restores the
+    # previous tag set.
+    detailed_metrics: bool = True
+    # Radius for `nearby_apples` and the `rm_by_nearby_apples` buckets. 2 is
+    # APPLE_RADIUS -- the neighbourhood that actually drives regrowth.
+    nearby_apple_radius: int = 2
+    # Episodes between distribution histograms (`rm_pred/hist`,
+    # `reward/agent_hist`). 0 disables them; they are far larger on disk than a
+    # scalar, so this is off by default.
+    histogram_every_n_episodes: int = 0
 
 
 @dataclass
