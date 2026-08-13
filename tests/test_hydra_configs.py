@@ -118,3 +118,38 @@ def test_num_frames_defaults_to_one(env_group):
 def test_num_frames_is_overridable():
     config = _compose("env=medium", "env.num_frames=2")
     assert config.env.num_frames == 2
+
+
+def test_example_experiment_documents_the_entropy_fields():
+    """example.yaml is the reference users copy from. A field that exists in
+    the schema but not here is a field nobody discovers."""
+    import os
+
+    from commons_game_marp import configs
+
+    path = os.path.join(os.path.dirname(configs.__file__), "experiment", "example.yaml")
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+
+    for field in (
+        "ent_coef_mode",
+        "target_entropy_frac",
+        "ent_coef_lr",
+        "ent_coef_min",
+        "ent_coef_max",
+        "num_frames",
+    ):
+        assert field in text, f"{field} is undocumented in example.yaml"
+
+
+def test_example_experiment_does_not_claim_mappo_lacks_ent_coef_end():
+    """MAPPO gained the full entropy field set; the old comment is now false."""
+    import os
+
+    from commons_game_marp import configs
+
+    path = os.path.join(os.path.dirname(configs.__file__), "experiment", "example.yaml")
+    with open(path, encoding="utf-8") as handle:
+        text = handle.read()
+
+    assert "MAPPO has no ent_coef_end" not in text

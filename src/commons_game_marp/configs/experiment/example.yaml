@@ -69,9 +69,16 @@ env:
   # is usually run with 1 for smoke tests.
   num_agents: 5
 
-  # Half-width of an agent's egocentric view, so 5 gives an 11x11x3 RGB
-  # observation.
-  agent_view_range: 5
+  # Half-width of an agent's egocentric view, so 7 gives a 15x15x3 RGB
+  # observation. Matches the reference implementation.
+  agent_view_range: 7
+
+  # Observations stacked along the channel axis, so 2 gives 15x15x6. 1 leaves
+  # the env unwrapped. Above 1 the policies, reward model and preference
+  # buffer all widen with it -- and the buffer's resident size scales
+  # linearly, so check the startup warning before raising this with a long
+  # buffer.
+  num_frames: 1
 
   # Steps per episode.
   ep_length: 600
@@ -122,10 +129,20 @@ algorithm:
   # PPO ratio clip. Smaller is a more conservative update.
   clip_range: 0.2
 
-  # Entropy bonus (exploration) at the start of training...
-  ent_coef: 0.1
-  # ...annealed linearly to this by the final episode.
-  ent_coef_end: 0.01
+  # Exploration. `adaptive` tunes the coefficient to hold policy entropy at
+  # `target_entropy_frac * ln(num_actions)` -- 1.25 nats at 8 actions. It
+  # replaced a fixed schedule that could not do the job: in the 2026-08-13
+  # narrow_view run, entropy had collapsed to 0.64 nats while ent_coef was
+  # still 0.068, so no reachable floor would have bitten.
+  # `anneal` is the old linear ent_coef -> ent_coef_end schedule, kept so
+  # earlier runs stay reproducible. `fixed` holds ent_coef constant.
+  ent_coef_mode: adaptive    # adaptive | anneal | fixed
+  ent_coef: 0.1              # initial value (adaptive) / schedule start (anneal)
+  ent_coef_end: 0.01         # anneal only
+  target_entropy_frac: 0.6   # adaptive only
+  ent_coef_lr: 0.0003        # adaptive only
+  ent_coef_min: 0.001
+  ent_coef_max: 0.5
 
   # Weight of the value loss in the total loss.
   vf_coef: 0.5
@@ -168,7 +185,13 @@ algorithm:
 #   gamma: 0.99
 #   gae_lambda: 0.95
 #   clip_range: 0.2
-#   ent_coef: 0.01           # Constant -- MAPPO has no ent_coef_end.
+#   ent_coef_mode: adaptive  # Same three modes as IPPO, one shared controller.
+#   ent_coef: 0.1
+#   ent_coef_end: 0.01
+#   target_entropy_frac: 0.6
+#   ent_coef_lr: 0.0003
+#   ent_coef_min: 0.001
+#   ent_coef_max: 0.5
 #   vf_coef: 0.5
 #   n_steps: 2048
 #   batch_size: 256
