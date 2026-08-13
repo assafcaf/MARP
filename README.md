@@ -194,7 +194,8 @@ value is in `config.yaml` and `run_info.json`.
 - `action`: Action taken by the agent
 - `reward`: Reward received for this step
 - `predicted_reward`: Predicted reward for this step (only if reward model enabled)
-- `apple_eaten`: Boolean indicating whether an apple was consumed in the current step (True if reward > 0)
+- `env_reward`: Unpenalised environment reward for this step (differs from `reward` when `env.penalty` is on)
+- `apple_eaten`: Boolean indicating whether an apple was consumed in the current step (True if the unpenalised reward > 0)
 - `nearby_apples`: Integer count of apples within 2 steps (Euclidean distance) from the agent's position. This metric only counts apples that are actually nearby, not all apples in the agent's full view range.
 - `ate_last_apple_in_cluster`: Boolean indicating whether the agent consumed the last remaining apple in a cluster (a resource that will not reproduce). This is True when an apple is eaten and no other apples remain within the spawn radius (APPLE_RADIUS=2) of the nearest apple spawn point.
 
@@ -203,6 +204,18 @@ View TensorBoard (live during training):
 ```bash
 tensorboard --logdir logs
 ```
+
+**[docs/metrics.md](docs/metrics.md) is the full tag catalog** -- what every
+scalar means and what to read it for. Beyond the returns and social metrics, a
+run logs the action distribution (`action/*`), how the commons was used
+(`harvest/*` -- harvest rate, apples in proximity, and the fraction of harvests
+that emptied a cluster), the reward model's step-level behaviour (`rm_*` -- what
+it pays per action, on harvest versus not, and by local apple density), and
+throughput (`time/*`).
+
+Turn the extra families off with `logging.detailed_metrics=false`; they cost
+about 0.4% of wall time. Distribution histograms are off by default --
+`logging.histogram_every_n_episodes=50` enables them.
 
 ### Console output
 
@@ -350,6 +363,7 @@ Logging:
   - `grad_norm` — mean pre-clip gradient norm over steps with finite gradients.
   - `grad_overflow_rate` — share of steps the AMP loss scaler skipped for overflow. A few at the start of a run is the scaler finding its scale; a persistently high value means AMP is hurting and `use_amp: false` is worth trying.
   - `score_phi_corr` — Pearson correlation between episode scores and phi, reported only once at least 4 distinct episodes are in the batch (a 2-point correlation is +-1 by construction).
+- `rm_*` in TensorBoard is the *step-level* view of the same model, and it can disagree with the pair-level one above — a falling loss is compatible with a per-step reward that stays flat. `rm_outcome/separation` is the headline number: how many pooled standard deviations separate a harvest from a non-harvest in the model's eyes. See [docs/metrics.md](docs/metrics.md).
 
 Checkpoints:
 - All algorithms: `logs/<config>/<run>/model_last.pt`, `logs/<config>/<run>/reward_model_last.pt`
