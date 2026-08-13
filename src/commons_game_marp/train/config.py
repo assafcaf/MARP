@@ -50,7 +50,7 @@ class IPPOConfig:
     ent_coef: float = 0.1  # initial value (adaptive) / schedule start (anneal)
     ent_coef_end: float = 0.01  # anneal only
     target_entropy_frac: float = 0.6  # adaptive: target = frac * ln(num_actions)
-    ent_coef_lr: float = 3e-4
+    ent_coef_lr: float = 3e-3
     ent_coef_min: float = 1e-3
     ent_coef_max: float = 0.5
     vf_coef: float = 0.5
@@ -76,7 +76,7 @@ class MAPPOConfig:
     ent_coef: float = 0.1  # initial value (adaptive) / schedule start (anneal)
     ent_coef_end: float = 0.01  # anneal only
     target_entropy_frac: float = 0.6  # adaptive: target = frac * ln(num_actions)
-    ent_coef_lr: float = 3e-4
+    ent_coef_lr: float = 3e-3
     ent_coef_min: float = 1e-3
     ent_coef_max: float = 0.5
     vf_coef: float = 0.5

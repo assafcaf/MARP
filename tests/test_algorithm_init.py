@@ -287,6 +287,43 @@ def test_ippo_reports_per_agent_entropy_metrics(fake_env):
     assert metrics["entropy_per_agent"] == {"agent-0": 1.5, "agent-1": 0.5}
 
 
+def test_ippo_per_agent_coefficients_diverge_with_per_agent_entropy(fake_env):
+    """The central claim of IPPO's per-agent controller design: a freeloading
+    agent's entropy diverging from its peers must show up as its coefficient
+    diverging too, not as an averaged-away scalar. Drives agent-0's entropy
+    below target and agent-1's above target directly through their own
+    controllers, then checks the coefficients moved in opposite directions."""
+    from commons_game_marp.train.algorithms.ippo import IPPOAlgorithm
+    from commons_game_marp.train.config import IPPOConfig
+
+    algorithm = IPPOAlgorithm(IPPOConfig())
+    algorithm.on_env_ready(fake_env)
+
+    target = next(iter(algorithm.ent_controllers.values())).target_entropy
+    below_target = target - 0.5
+    above_target = target + 0.5
+    assert below_target > 0  # sanity: still a valid entropy value
+
+    start = {
+        agent_id: controller.coefficient()
+        for agent_id, controller in algorithm.ent_controllers.items()
+    }
+
+    for _ in range(50):
+        algorithm.ent_controllers["agent-0"].observe_entropy(below_target)
+        algorithm.ent_controllers["agent-1"].observe_entropy(above_target)
+
+    metrics = algorithm.on_episode_end(0)
+    per_agent = metrics["ent_coef_per_agent"]
+
+    # Below target -> coefficient rises. Above target -> coefficient falls.
+    assert per_agent["agent-0"] > start["agent-0"]
+    assert per_agent["agent-1"] < start["agent-1"]
+    # The two controllers must actually have diverged from each other, not
+    # just from their own starting points.
+    assert per_agent["agent-0"] > per_agent["agent-1"]
+
+
 def test_mappo_builds_one_shared_entropy_controller(fake_env):
     """MAPPO has a single shared actor, so a single controller."""
     from commons_game_marp.train.algorithms.mappo import MAPPOAlgorithm

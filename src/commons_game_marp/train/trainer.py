@@ -25,6 +25,10 @@ class Trainer:
     # into it (view 7 + 2 frames is ~20 GB at the default buffer length).
     BUFFER_WARN_BYTES = 8 * 1024**3
 
+    # Consecutive logged episodes of a saturated, wrong-side entropy coefficient
+    # before the run says so out loud.
+    SATURATION_WARN_EPISODES = 20
+
     def __init__(self, config: TrainerConfig):
         self.config = config
         # Generate random seed if None
@@ -38,6 +42,7 @@ class Trainer:
         self.algorithm = build_algorithm(config.algorithm)
         self.algorithm.on_env_ready(self.env)
         self.logger = self._build_logger()
+        self._saturated_episodes = 0
         self._announce_setup()
 
     def _announce_setup(self) -> None:
@@ -92,7 +97,9 @@ class Trainer:
             metric=env_cfg.metric,
             penalty=env_cfg.penalty,
         )
-        num_frames = int(getattr(env_cfg, "num_frames", 1))
+        num_frames = int(env_cfg.num_frames)
+        if num_frames < 1:
+            raise ValueError(f"env.num_frames must be >= 1, got {num_frames}")
         if num_frames > 1:
             return FrameStackEnv(env, num_frames)
         return env
@@ -123,6 +130,33 @@ class Trainer:
             "Lower reward_model.max_episodes_in_buffer or set "
             "reward_model.store_max_steps_per_agent to bound it."
         )
+
+    def _watch_entropy_saturation(self, algo_metrics: dict) -> None:
+        """Say out loud when the entropy controller has stopped controlling.
+
+        A coefficient pinned at a clamp while entropy sits on the wrong side of
+        target is an open loop. It looks exactly like a healthy steady value in
+        `metrics.jsonl`, which is how the schedule this controller replaced went
+        unnoticed for 350 episodes.
+        """
+        saturated = algo_metrics.get("ent_coef_saturated")
+        entropy = algo_metrics.get("entropy")
+        target = algo_metrics.get("target_entropy")
+        if not saturated or entropy is None or target is None:
+            self._saturated_episodes = 0
+            return
+        if entropy >= target:
+            self._saturated_episodes = 0
+            return
+        self._saturated_episodes += 1
+        if self._saturated_episodes == self.SATURATION_WARN_EPISODES:
+            self.console.warn(
+                f"entropy coefficient has been pinned at a clamp for "
+                f"{self.SATURATION_WARN_EPISODES} episodes while entropy "
+                f"({entropy:.2f}) sits below target ({target:.2f}) -- the controller "
+                "has stopped responding. Widen algorithm.ent_coef_max or raise "
+                "algorithm.ent_coef_lr."
+            )
 
     def _build_logger(self) -> ResultLogger:
         log_cfg = self.config.logging
@@ -349,6 +383,7 @@ class Trainer:
             if rm_metrics:
                 algo_metrics = dict(algo_metrics)
                 algo_metrics["reward_model"] = rm_metrics
+            self._watch_entropy_saturation(algo_metrics)
             payload = {
                 "episode": episode,
                 "steps": step_count,

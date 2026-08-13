@@ -376,6 +376,9 @@ class IPPOAlgorithm(Algorithm):
             metrics["target_entropy"] = next(
                 iter(self.ent_controllers.values())
             ).target_entropy
+            metrics["ent_coef_saturated"] = sum(
+                1 for controller in self.ent_controllers.values() if controller.is_saturated()
+            ) / len(self.ent_controllers)
         self._last_metrics = {}
         return metrics
 

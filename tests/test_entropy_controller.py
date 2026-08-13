@@ -143,3 +143,59 @@ def test_mode_defaults_to_adaptive_when_the_field_is_absent():
     collapse unnoticed."""
     controller = EntropyController(SimpleNamespace(), 8, CPU)
     assert controller.mode == "adaptive"
+
+
+def test_is_saturated_when_pinned_at_the_ceiling():
+    """Entropy held well below target drives the coefficient up to ent_coef_max."""
+    controller = EntropyController(_config(ent_coef_lr=0.5), 8, CPU)
+    for _ in range(200):
+        controller.observe_entropy(0.0)
+    assert controller.coefficient() == pytest.approx(0.5)
+    assert controller.is_saturated() is True
+
+
+def test_is_saturated_when_pinned_at_the_floor():
+    """Entropy held above target drives the coefficient down to ent_coef_min."""
+    controller = EntropyController(_config(ent_coef_lr=0.5), 8, CPU)
+    for _ in range(200):
+        controller.observe_entropy(2.079)
+    assert controller.coefficient() == pytest.approx(0.001)
+    assert controller.is_saturated() is True
+
+
+def test_is_not_saturated_away_from_the_clamps():
+    controller = EntropyController(_config(), 8, CPU)
+    assert controller.is_saturated() is False
+
+
+def test_is_saturated_is_always_false_outside_adaptive_mode():
+    for mode in ("fixed", "anneal"):
+        controller = EntropyController(_config(ent_coef_mode=mode), 8, CPU)
+        assert controller.is_saturated() is False
+
+
+OBSERVATIONS_PER_EPISODE = 10  # IPPO defaults: ~10 minibatches per episode per agent
+
+
+def test_shipped_default_responds_within_the_window_a_collapse_takes():
+    """Calibration guard, not a unit test of the control law.
+
+    `observe_entropy` runs once per minibatch -- about ten times an episode at
+    IPPO's defaults, not the thousands per episode SAC's 3e-4 convention
+    assumes. At 3e-4 the coefficient moved 0.3% an episode, which against the
+    diagnostic run's collapse (entropy 2.08 -> 0.64 across roughly a hundred
+    episodes) would have been close to a no-op. This pins the shipped default
+    to a response fast enough to matter on that timescale.
+    """
+    from commons_game_marp.train.config import IPPOConfig
+
+    controller = EntropyController(IPPOConfig(), 8, CPU)
+    start = controller.coefficient()
+
+    for _ in range(50 * OBSERVATIONS_PER_EPISODE):
+        controller.observe_entropy(0.5)
+
+    assert controller.coefficient() > 2 * start, (
+        f"coefficient only reached {controller.coefficient():.4f} from {start:.4f} "
+        "after 50 episodes of collapsed entropy -- too slow to catch a collapse"
+    )

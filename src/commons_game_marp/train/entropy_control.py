@@ -9,6 +9,19 @@ collapsed to 0.64 nats while `ent_coef` was still 0.068 -- roughly thirty times
 the policy-loss magnitude in the total loss, and still losing. No reachable
 floor on a fixed schedule would have helped, because the schedule never got
 low enough to be the binding constraint. Targeting the entropy itself does.
+
+`ent_coef_lr` and the rollout shape are coupled. `observe_entropy` fires once
+per minibatch, not once per env step, so the controller's effective speed is
+`ent_coef_lr` scaled by however many minibatches an episode works out to:
+roughly `(n_steps / batch_size) * update_epochs * (ep_length / n_steps)`, which
+collapses to `update_epochs * ep_length / batch_size` calls per episode. IPPO's
+defaults (`n_steps=512`, `batch_size=128`, `update_epochs=2`, `ep_length=600`)
+give about 10 calls an episode per agent; MAPPO's defaults give about 12.
+Halving `batch_size` doubles the controller's speed at a fixed `ent_coef_lr`,
+and the two algorithms already run at different effective rates from the same
+nominal `ent_coef_lr` for the same reason. This module does not normalise for
+it -- `ent_coef_lr` is a per-minibatch gain, not a per-episode one, and tuning
+it means accounting for the rollout settings alongside it.
 """
 
 import math
@@ -79,6 +92,26 @@ class EntropyController:
             return self.start + (self.end - self.start) * progress
         assert self._log_ent_coef is not None
         return float(self._log_ent_coef.detach().exp().clamp(self.minimum, self.maximum))
+
+    def is_saturated(self) -> bool:
+        """True when the coefficient sits at a clamp and can no longer respond.
+
+        A saturated controller is an open loop: entropy can keep moving and the
+        coefficient will not. Reported so that degraded state is visible rather
+        than looking like a healthy steady value.
+
+        The comparison uses a small relative tolerance rather than an exact
+        `<=`/`>=`: `_log_ent_coef` is a float32 tensor clamped in log space, and
+        the exp/log round trip through `coefficient()` lands a few ULPs on
+        either side of the true bound (observed: 0.0010000000475 against a
+        0.001 floor). An exact comparison would report an open loop as still
+        responsive purely from that rounding.
+        """
+        if self.mode != "adaptive":
+            return False
+        coef = self.coefficient()
+        tol = 1e-6
+        return coef <= self.minimum * (1 + tol) or coef >= self.maximum * (1 - tol)
 
     def observe_entropy(self, entropy: float) -> None:
         """One dual-ascent step from an observed policy entropy. Adaptive only.

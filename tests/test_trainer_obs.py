@@ -74,6 +74,25 @@ def test_build_env_returns_the_bare_env_at_one_frame():
     assert isinstance(env, HarvestCommonsEnv)
 
 
+@pytest.mark.parametrize("num_frames", [0, -1])
+def test_build_env_rejects_non_positive_num_frames(num_frames):
+    """A typo'd 0 or -1 used to fall through the getattr default and return
+    the bare env with no complaint. num_frames is a declared dataclass field
+    now, so read it directly and reject anything below 1."""
+    from commons_game_marp.train.config import TrainerConfig
+
+    config = TrainerConfig()
+    config.env.num_frames = num_frames
+    config.env.num_agents = 2
+    config.env.map_type = "small"
+
+    stub = object.__new__(Trainer)
+    stub.config = config
+
+    with pytest.raises(ValueError, match="num_frames"):
+        Trainer._build_env(stub)
+
+
 def test_build_env_wraps_and_widens_the_observation_space_above_one_frame():
     from commons_game_marp.env.frame_stack import FrameStackEnv
     from commons_game_marp.train.config import TrainerConfig
@@ -152,4 +171,59 @@ def test_stays_quiet_when_the_reward_model_is_off():
     """No reward model means no preference buffer to size."""
     stub = _buffer_stub(num_frames=2, view=7, max_episodes=5000, enabled=False)
     Trainer._warn_if_buffer_large(stub)
+    assert stub.console.messages == []
+
+
+def _saturation_stub():
+    stub = object.__new__(Trainer)
+    stub.console = _WarnCapture()
+    stub.SATURATION_WARN_EPISODES = Trainer.SATURATION_WARN_EPISODES
+    stub._saturated_episodes = 0
+    return stub
+
+
+def test_watch_entropy_saturation_warns_exactly_once_at_the_threshold():
+    stub = _saturation_stub()
+    metrics = {"ent_coef_saturated": 1.0, "entropy": 0.5, "target_entropy": 1.25}
+
+    for episode in range(Trainer.SATURATION_WARN_EPISODES + 5):
+        Trainer._watch_entropy_saturation(stub, metrics)
+
+    assert len(stub.console.messages) == 1
+    message = stub.console.messages[0]
+    assert "0.50" in message
+    assert "1.25" in message
+
+
+def test_watch_entropy_saturation_resets_when_entropy_recovers_above_target():
+    stub = _saturation_stub()
+    below = {"ent_coef_saturated": 1.0, "entropy": 0.5, "target_entropy": 1.25}
+    above = {"ent_coef_saturated": 1.0, "entropy": 1.5, "target_entropy": 1.25}
+
+    for _ in range(Trainer.SATURATION_WARN_EPISODES - 1):
+        Trainer._watch_entropy_saturation(stub, below)
+    Trainer._watch_entropy_saturation(stub, above)
+    assert stub._saturated_episodes == 0
+
+    for _ in range(Trainer.SATURATION_WARN_EPISODES - 1):
+        Trainer._watch_entropy_saturation(stub, below)
+    assert stub.console.messages == []
+
+
+def test_watch_entropy_saturation_silent_when_not_saturated():
+    stub = _saturation_stub()
+    metrics = {"ent_coef_saturated": 0.0, "entropy": 0.5, "target_entropy": 1.25}
+
+    for _ in range(Trainer.SATURATION_WARN_EPISODES + 5):
+        Trainer._watch_entropy_saturation(stub, metrics)
+
+    assert stub.console.messages == []
+
+
+def test_watch_entropy_saturation_silent_when_keys_are_absent():
+    stub = _saturation_stub()
+
+    for _ in range(Trainer.SATURATION_WARN_EPISODES + 5):
+        Trainer._watch_entropy_saturation(stub, {})
+
     assert stub.console.messages == []

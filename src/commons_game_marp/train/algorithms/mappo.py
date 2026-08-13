@@ -319,6 +319,7 @@ class MAPPOAlgorithm(Algorithm):
             self.ent_controller.set_episode(self._current_episode)
             metrics["ent_coef"] = self.ent_controller.coefficient()
             metrics["target_entropy"] = self.ent_controller.target_entropy
+            metrics["ent_coef_saturated"] = 1.0 if self.ent_controller.is_saturated() else 0.0
         self._last_metrics = {}
         return metrics
 

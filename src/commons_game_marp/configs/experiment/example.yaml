@@ -140,9 +140,14 @@ algorithm:
   ent_coef: 0.1              # initial value (adaptive) / schedule start (anneal)
   ent_coef_end: 0.01         # anneal only
   target_entropy_frac: 0.6   # adaptive only
-  ent_coef_lr: 0.0003        # adaptive only
-  ent_coef_min: 0.001
-  ent_coef_max: 0.5
+  # adaptive only. Units are per minibatch, not per episode: observe_entropy
+  # fires once per minibatch, which at this file's rollout settings
+  # (n_steps=512, batch_size=128, update_epochs=2, ep_length=600) is about 10
+  # calls per episode per agent -- not the thousands per episode the SAC
+  # convention this value is borrowed from assumes.
+  ent_coef_lr: 0.003         # adaptive only
+  ent_coef_min: 0.001        # adaptive only
+  ent_coef_max: 0.5          # adaptive only
 
   # Weight of the value loss in the total loss.
   vf_coef: 0.5
@@ -189,7 +194,7 @@ algorithm:
 #   ent_coef: 0.1
 #   ent_coef_end: 0.01
 #   target_entropy_frac: 0.6
-#   ent_coef_lr: 0.0003
+#   ent_coef_lr: 0.003
 #   ent_coef_min: 0.001
 #   ent_coef_max: 0.5
 #   vf_coef: 0.5
