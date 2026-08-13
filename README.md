@@ -12,7 +12,8 @@ Key pieces:
 - `src/commons_game_marp/env/maps.py`: ASCII map layouts used for spawning walls/apples/agents.
 - `src/commons_game_marp/reward_model/`: MARP-style preference-based reward model and training utilities.
 - `src/commons_game_marp/train/metrics.py`: Agent-specific metrics calculation (nearby apples, cluster detection).
-- `scripts/plot_phi_comparisons.py`: Phi comparison plots and NV vs IA social metrics galleries.
+- `src/commons_game_marp/analysis/`: Plotting and cross-session analysis commands.
+- `src/commons_game_marp/cli.py`: The `commons-game` command.
 
 ## Installation
 
@@ -33,9 +34,28 @@ effect without reinstalling.
 Prefix commands with `uv run` to use the project environment:
 
 ```bash
-uv run pytest              # run the test suite
-uv run python main.py      # run training
+uv run pytest                    # run the test suite
+uv run commons-game --help       # see all commands
 ```
+
+## The `commons-game` command
+
+Everything runs through one command:
+
+| Command | Does |
+|---|---|
+| `commons-game train` | Train agents (Hydra — see [Training](#training)) |
+| `commons-game plot run <run-dir>` | Plot reward and social metrics for one run |
+| `commons-game plot runs <run-dirs>` | Plot averaged metrics with std dev across runs |
+| `commons-game plot phi` | Phi comparison plots and NV vs IA galleries |
+| `commons-game compare-modes` | Compare narrow-view against input-aggregation runs |
+| `commons-game sessions` | Process sessions and generate cross-session plots |
+| `commons-game tensorboard` | Launch TensorBoard on a log directory |
+
+Run `commons-game <command> --help` for a command's options.
+
+`commons-game-train` and `uv run python main.py` remain as aliases for the
+training path.
 
 ### PyTorch and CUDA
 
@@ -49,21 +69,21 @@ version, change the `torch` pin and the `[[tool.uv.index]]` URL, then re-run
 Training is configured with [Hydra](https://hydra.cc/). Run with defaults:
 
 ```bash
-uv run commons-game-train
+uv run commons-game train
 ```
 
 Override any value from the command line:
 
 ```bash
-uv run commons-game-train algorithm=ippo env=medium episodes=300 seed=7
-uv run commons-game-train reward_model=off env.penalty=true
-uv run commons-game-train algorithm=mappo algorithm.learning_rate=1e-4
+uv run commons-game train algorithm=ippo env=medium episodes=300 seed=7
+uv run commons-game train reward_model=off env.penalty=true
+uv run commons-game train algorithm=mappo algorithm.learning_rate=1e-4
 ```
 
 Print the composed config without training:
 
 ```bash
-uv run commons-game-train --cfg job
+uv run commons-game train --cfg job
 ```
 
 `uv run python main.py` is equivalent — `main.py` is a two-line shim over the
@@ -88,8 +108,8 @@ directly.
 Named combinations live in `configs/experiment/` and are selected with a `+`:
 
 ```bash
-uv run commons-game-train +experiment=mappo
-uv run commons-game-train +experiment=ippo episodes=500
+uv run commons-game train +experiment=mappo
+uv run commons-game train +experiment=ippo episodes=500
 ```
 
 ### Sweeps
@@ -99,13 +119,13 @@ sequentially:
 
 ```bash
 # Three algorithms x three seeds = 9 runs
-uv run commons-game-train -m algorithm=dqn,ippo,mappo seed=0,1,2
+uv run commons-game train -m algorithm=dqn,ippo,mappo seed=0,1,2
 
 # Sweep a hyperparameter
-uv run commons-game-train -m algorithm=ippo algorithm.learning_rate=1e-3,3e-4,1e-4
+uv run commons-game train -m algorithm=ippo algorithm.learning_rate=1e-3,3e-4,1e-4
 
 # Compare reward-model modes across five seeds
-uv run commons-game-train -m +experiment=sequence_narrow_vs_input_agg \
+uv run commons-game train -m +experiment=sequence_narrow_vs_input_agg \
     reward_model=narrow_view,input_aggregation seed=0,1,2,3,4
 ```
 
@@ -149,7 +169,7 @@ Select the learner with the `algorithm` group. Supported values: `dqn`,
 `random`, `ippo`, `mappo`.
 
 ```bash
-uv run commons-game-train algorithm=ippo
+uv run commons-game train algorithm=ippo
 ```
 
 - **DQN**: Deep Q-Network for single or multi-agent (independent learners).
@@ -172,8 +192,8 @@ Key mechanics:
 Enable it by selecting a `reward_model` group value (`off` is the default):
 
 ```bash
-uv run commons-game-train reward_model=narrow_view
-uv run commons-game-train reward_model=input_aggregation reward_model.phi=efficiency_x_equality
+uv run commons-game train reward_model=narrow_view
+uv run commons-game train reward_model=input_aggregation reward_model.phi=efficiency_x_equality
 ```
 
 The `narrow_view` and `input_aggregation` presets set:
@@ -242,7 +262,7 @@ Checkpoints:
 Generate reward and social-metric plots from a run folder (expects `metrics.jsonl`):
 
 ```bash
-python scripts/plot_run_metrics.py logs/<run-name>
+uv run commons-game plot run logs/<run-name>
 ```
 
 Outputs:
@@ -260,12 +280,12 @@ Options:
 Generate averaged plots with standard deviation across multiple runs:
 
 ```bash
-python scripts/plot_multiple_runs.py logs/<run1> logs/<run2> logs/<run3> ...
+uv run commons-game plot runs logs/<run1> logs/<run2> logs/<run3> ...
 ```
 
 Example:
 ```bash
-python scripts/plot_multiple_runs.py logs/20251231-224618-mappo-map=small-agents=5-rm=narrow_view-seed=1814091097 logs/20251231-234319-mappo-map=small-agents=5-rm=narrow_view-seed=1942310406 logs/20260101-004021-mappo-map=small-agents=5-rm=narrow_view-seed=1364072973
+uv run commons-game plot runs logs/20251231-224618-mappo-map=small-agents=5-rm=narrow_view-seed=1814091097 logs/20251231-234319-mappo-map=small-agents=5-rm=narrow_view-seed=1942310406 logs/20260101-004021-mappo-map=small-agents=5-rm=narrow_view-seed=1364072973
 ```
 
 Outputs:
@@ -297,7 +317,7 @@ STD is shown as shaded regions in the main output folder, SE versions are saved 
 Generate per-session averaged plots and cross-session comparison plots:
 
 ```bash
-python scripts/process_all_sessions.py
+uv run commons-game sessions
 ```
 
 This script processes all defined experiment sessions and generates:
@@ -312,16 +332,16 @@ This script processes all defined experiment sessions and generates:
 
 ```bash
 # Run everything (default)
-python scripts/process_all_sessions.py
+uv run commons-game sessions
 
 # Run ONLY cross-session comparisons (skip per-session plots)
-python scripts/process_all_sessions.py --comparisons-only
+uv run commons-game sessions --comparisons-only
 
 # Run ONLY per-session plots (skip comparisons)
-python scripts/process_all_sessions.py --skip-comparisons
+uv run commons-game sessions --skip-comparisons
 
 # Generate plots without titles (useful for publication figures)
-python scripts/process_all_sessions.py --no-title
+uv run commons-game sessions --no-title
 ```
 
 **Comparison outputs** (`logs/comparisons/`):
@@ -353,7 +373,7 @@ Example session names:
 Generate comparison plots for different phi values and social metrics galleries:
 
 ```bash
-python scripts/plot_phi_comparisons.py --algorithm ippo
+uv run commons-game plot phi --algorithm ippo
 ```
 
 This script produces two types of plots:
@@ -374,19 +394,19 @@ All plots use Standard Error (SE) for shading.
 
 ```bash
 # Use IPPO sessions (default)
-python scripts/plot_phi_comparisons.py --algorithm ippo
+uv run commons-game plot phi --algorithm ippo
 
 # Use MAPPO sessions
-python scripts/plot_phi_comparisons.py --algorithm mappo
+uv run commons-game plot phi --algorithm mappo
 
 # Custom output directory
-python scripts/plot_phi_comparisons.py -o custom/output/dir
+uv run commons-game plot phi -o custom/output/dir
 
 # Hide titles (for publication figures)
-python scripts/plot_phi_comparisons.py --no-title
+uv run commons-game plot phi --no-title
 
 # Custom smoothing window (default: 10)
-python scripts/plot_phi_comparisons.py --smooth 20
+uv run commons-game plot phi --smooth 20
 ```
 
 The script generates both unsmoothed and smoothed versions of all plots. Smoothing applies a moving average to the mean line while keeping SE (standard error) bands unchanged.
@@ -406,7 +426,7 @@ simultaneously with their own learning policies. Each agent has independent acto
 and critic networks that use local observations only.
 
 ```bash
-uv run commons-game-train algorithm=ippo env.num_agents=5 \
+uv run commons-game train algorithm=ippo env.num_agents=5 \
     algorithm.learning_rate=0.0003 algorithm.n_steps=1024 \
     algorithm.batch_size=256 algorithm.update_epochs=4 \
     algorithm.hidden_size=256 algorithm.flatten_obs=false \
@@ -426,7 +446,7 @@ MAPPO uses a shared actor and centralized critic over concatenated observations.
 Enable it by selecting the `mappo` algorithm group:
 
 ```bash
-uv run commons-game-train algorithm=mappo env.num_agents=5 \
+uv run commons-game train algorithm=mappo env.num_agents=5 \
     algorithm.n_steps=1024 algorithm.batch_size=256 \
     algorithm.update_epochs=4 algorithm.flatten_obs=false \
     algorithm.normalize_obs=true

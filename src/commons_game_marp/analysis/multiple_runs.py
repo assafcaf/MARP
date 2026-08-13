@@ -806,9 +806,10 @@ def plot_multiple_runs(
     return rewards_plotted, social_plotted, agent_pred_plotted
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate averaged plots with standard deviation across multiple runs."
+        prog="commons-game plot runs",
+        description="Generate averaged plots with standard deviation across multiple runs.",
     )
     parser.add_argument(
         "run_dirs",
@@ -838,10 +839,12 @@ def main() -> int:
         action="store_true",
         help="Hide titles from all plots.",
     )
-    args = parser.parse_args()
-    
+    return parser
+
+
+def run(args: argparse.Namespace) -> int:
     show_title = not args.no_title
-    
+
     rewards_plotted, social_plotted, agent_pred_plotted = plot_multiple_runs(
         args.run_dirs,
         output_dir=args.output_dir,
@@ -869,5 +872,5 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run(build_parser().parse_args()))
 

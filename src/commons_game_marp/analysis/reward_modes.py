@@ -303,18 +303,24 @@ def plot_comparison(
     print(f"Saved: {os.path.join(output_dir, 'final_performance_summary.png')}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Compare reward model modes")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="commons-game compare-modes",
+        description="Compare reward model modes",
+    )
     parser.add_argument("--narrow-view", nargs="+", required=True, help="Narrow view run directories")
     parser.add_argument("--input-aggregation", nargs="+", required=True, help="Input aggregation run directories")
     parser.add_argument("--output-dir", "-o", default="logs/comparisons/mode_comparison", help="Output directory")
-    
-    args = parser.parse_args()
+    return parser
+
+
+def run(args: argparse.Namespace) -> int:
     plot_comparison(args.narrow_view, args.input_aggregation, args.output_dir)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(run(build_parser().parse_args()))
 
 
 
