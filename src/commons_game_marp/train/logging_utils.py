@@ -1,10 +1,27 @@
 import csv
 import json
+import math
 import os
 import time
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Sequence, Tuple
 
+import numpy as np
 from torch.utils.tensorboard import SummaryWriter
+
+
+def _is_number(value: Any) -> bool:
+    """A real, finite scalar.
+
+    Bools are excluded even though `True` is an `int`: a flag logged as a 1.0
+    scalar reads as a measurement, and non-finite values are dropped because a
+    single NaN makes TensorBoard's y-axis autoscale useless for the rest of the
+    run.
+    """
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
 
 
 class ResultLogger:
@@ -74,23 +91,65 @@ class ResultLogger:
                 self._writer.add_scalar(f"social/{name}", float(value), step)
         elif isinstance(social_metrics, dict):
             for name, value in social_metrics.items():
-                if isinstance(value, (int, float)):
+                if _is_number(value):
                     self._writer.add_scalar(f"social/{name}", float(value), step)
 
         algo_metrics = payload.get("algo_metrics")
         if isinstance(algo_metrics, dict):
-            if "avg_loss" in algo_metrics and isinstance(algo_metrics["avg_loss"], (int, float)):
+            if "avg_loss" in algo_metrics and _is_number(algo_metrics["avg_loss"]):
                 self._writer.add_scalar("train/loss", float(algo_metrics["avg_loss"]), step)
-            if "loss" in algo_metrics and isinstance(algo_metrics["loss"], (int, float)):
+            if "loss" in algo_metrics and _is_number(algo_metrics["loss"]):
                 self._writer.add_scalar("train/loss", float(algo_metrics["loss"]), step)
             reward_model_metrics = algo_metrics.get("reward_model")
             if isinstance(reward_model_metrics, dict):
                 for name, value in reward_model_metrics.items():
-                    if isinstance(value, (int, float)):
+                    if _is_number(value):
                         self._writer.add_scalar(f"reward_model/{name}", float(value), step)
             for name, value in algo_metrics.items():
-                if isinstance(value, (int, float)):
+                if _is_number(value):
                     self._writer.add_scalar(f"algo/{name}", float(value), step)
+                elif name != "reward_model" and isinstance(value, dict):
+                    # Per-agent algorithm metrics -- IPPO's `ent_coef_per_agent`
+                    # is the one that matters, because a single averaged
+                    # coefficient hides one agent's controller running away.
+                    # These used to be dropped for not being scalars.
+                    for agent_id, agent_value in value.items():
+                        if _is_number(agent_value):
+                            self._writer.add_scalar(
+                                f"algo/{name}/{agent_id}", float(agent_value), step
+                            )
+
+        self._log_sections(payload.get("sections"), step)
+        self._log_sections({"time": payload.get("time")}, step)
+
+    def _log_sections(self, sections: Any, step: int) -> None:
+        """Route `{section: {tag: value}}` to `section/tag` scalars.
+
+        The accumulator in `episode_stats` already decides *which* statistics
+        exist this iteration -- conditional ones vanish when their subset is
+        empty -- so this deliberately does not fill gaps with zeros. A gap in
+        the series is the honest rendering of "no harvest with five apples
+        nearby happened in these 600 steps".
+        """
+        if not isinstance(sections, dict):
+            return
+        for section, values in sections.items():
+            if not isinstance(values, dict):
+                continue
+            for name, value in values.items():
+                if _is_number(value):
+                    self._writer.add_scalar(f"{section}/{name}", float(value), step)
+
+    def log_histograms(self, step: int, histograms: Dict[str, Sequence[float]]) -> None:
+        """Write distribution histograms for the given step.
+
+        Separate from `log_episode` because histograms cost orders of magnitude
+        more disk than a scalar and are written on their own, coarser interval.
+        """
+        for tag, values in histograms.items():
+            array = [float(v) for v in values if _is_number(v)]
+            if array:
+                self._writer.add_histogram(tag, np.asarray(array), step)
 
     def log_agent_episode_details(self, agent_id: str, episode: int, episode_data: Dict[str, Any]) -> None:
         """Log detailed episode data for a specific agent to a separate CSV file.
