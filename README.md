@@ -112,6 +112,21 @@ uv run commons-game train +experiment=mappo
 uv run commons-game train +experiment=ippo episodes=500
 ```
 
+To write a new one, copy the annotated template
+[`configs/experiment/example.yaml`](src/commons_game_marp/configs/experiment/example.yaml).
+It spells out every value in every group — what it does, its default, and the
+values it accepts — and is runnable as-is:
+
+```bash
+uv run commons-game train +experiment=example            # run the template
+cp src/commons_game_marp/configs/experiment/example.yaml \
+   src/commons_game_marp/configs/experiment/my_run.yaml  # then edit it
+uv run commons-game train +experiment=my_run --cfg job   # check before running
+```
+
+Keep only the keys you actually change; anything omitted falls back to the
+group defaults selected under `defaults:`.
+
 ### Sweeps
 
 `--multirun` (`-m`) runs the cross-product of comma-separated values
@@ -129,15 +144,49 @@ uv run commons-game train -m +experiment=sequence_narrow_vs_input_agg \
     reward_model=narrow_view,input_aggregation seed=0,1,2,3,4
 ```
 
-Multirun output is grouped under `logs/hydra/multirun/<timestamp>/`.
+Sweep jobs use the same layout as single runs (see below): a sweep over seeds
+fills one configuration directory with sibling runs, while a sweep over
+`algorithm`, `env` or `reward_model` splits into separate configuration
+directories. Hydra also drops a `multirun.yaml` summary at the root of `logs/`.
 
 ### Outputs
 
-Logs are written to `logs/<run-name>/metrics.jsonl` and `logs/<run-name>/config.yaml`.
-Videos are written to `logs/<run-name>/videos/episode=XXXX.mp4`.
-TensorBoard logs are written to `logs/<run-name>/tensorboard/`.
-Extended agent episode information is written to `logs/<run-name>/extended_info/agent_X_episodes.csv`.
-Run folders include a reward-model suffix, e.g. `...-rm=off` or `...-rm=narrow_view`.
+Every run gets **one** directory, holding both Hydra's own output and the
+training artifacts. Runs are grouped by configuration, so all repeats of one
+setup sit side by side:
+
+```
+logs/
+  mappo-map=small-agents=5-rm=narrow_view-phi=efficiency_x_peace/   <- configuration
+    20260813-092316-seed=0/                                         <- one run
+      .hydra/{config,overrides,hydra}.yaml   composed config and CLI overrides
+      train_cli.log                          Hydra job log
+      run_info.json                          command, git commit, host, seed, versions
+      config.yaml                            resolved config (incl. a drawn seed)
+      metrics.jsonl                          per-episode metrics
+      tensorboard/                           TensorBoard event files
+      videos/episode=XXXX.mp4
+      extended_info/agent_X_episodes.csv
+      model_last.pt, reward_model_last.pt
+    20260813-092316-seed=1/
+    20260901-141207-seed=2/
+```
+
+The configuration directory names the algorithm, map, agent count and
+reward-model mode (plus phi when the reward model is on), followed by any other
+CLI override that the name does not already spell out -- so
+`-m algorithm.learning_rate=1e-3,1e-4` still lands in two distinct directories.
+Overrides under `logging.` never split a configuration. All repeats of one
+configuration are gathered with a single glob:
+
+```bash
+uv run commons-game plot runs logs/<configuration>/*
+```
+
+Set `logging.run_name=<name>` to replace the derived configuration directory
+with your own; repeats still nest inside it. A null `seed` is drawn at startup,
+after the directory name is fixed, so it is left out of the name -- the drawn
+value is in `config.yaml` and `run_info.json`.
 
 **Detailed agent episode logs:** When `logging.log_agent_episode_details` is enabled (default: `true`), separate CSV files are created for each agent in the `extended_info/` subdirectory (e.g., `extended_info/agent_0_episodes.csv`, `extended_info/agent_1_episodes.csv`). Each row in the CSV represents one step within an episode, with the following columns:
 - `episode`: Episode number
@@ -154,6 +203,26 @@ View TensorBoard (live during training):
 ```bash
 tensorboard --logdir logs
 ```
+
+### Console output
+
+Training announces each phase it enters -- setup, reward model configuration,
+the end of the preference warmup, checkpoints, and a closing summary -- and
+reports episode progress as it goes.
+
+How progress is reported depends on where the output goes. On a terminal it is
+a live progress bar carrying the current reward and social metrics; when the
+stream is redirected (`nohup`, a Hydra multirun, a pipe) it becomes a periodic
+status line instead, because a progress bar redrawing itself into a log file
+writes thousands of unreadable lines.
+
+- `logging.console=auto` (default) picks between the two by asking whether the
+  stream is a terminal.
+- `logging.console=bar` / `logging.console=plain` force one of them.
+- `logging.console=quiet` silences all console output; metrics still go to
+  `metrics.jsonl` and TensorBoard.
+- `logging.status_every=10` (default) sets how many episodes pass between
+  status lines when no bar is shown. The final episode always reports.
 
 Config tips (each is a command-line override, e.g. `logging.video_enabled=false`):
 - `logging.video_every_n_episodes` defaults to 100; reduce it to record more frequently.
@@ -283,19 +352,19 @@ Logging:
   - `score_phi_corr` — Pearson correlation between episode scores and phi, reported only once at least 4 distinct episodes are in the batch (a 2-point correlation is +-1 by construction).
 
 Checkpoints:
-- All algorithms: `logs/<run>/model_last.pt`, `logs/<run>/reward_model_last.pt`
+- All algorithms: `logs/<config>/<run>/model_last.pt`, `logs/<config>/<run>/reward_model_last.pt`
 
 ## Plotting run metrics
 
 Generate reward and social-metric plots from a run folder (expects `metrics.jsonl`):
 
 ```bash
-uv run commons-game plot run logs/<run-name>
+uv run commons-game plot run logs/<configuration>/<run>
 ```
 
 Outputs:
-- `logs/<run-name>/plots/rewards.png`
-- `logs/<run-name>/plots/social_metrics.png`
+- `logs/<configuration>/<run>/plots/rewards.png`
+- `logs/<configuration>/<run>/plots/social_metrics.png`
 
 Options:
 - `--smooth N`: moving average window (episodes); also adds a faded ±1 std band.
@@ -308,12 +377,18 @@ Options:
 Generate averaged plots with standard deviation across multiple runs:
 
 ```bash
-uv run commons-game plot runs logs/<run1> logs/<run2> logs/<run3> ...
+uv run commons-game plot runs logs/<configuration>/<run1> logs/<configuration>/<run2> ...
 ```
 
 Example:
 ```bash
-uv run commons-game plot runs logs/20251231-224618-mappo-map=small-agents=5-rm=narrow_view-seed=1814091097 logs/20251231-234319-mappo-map=small-agents=5-rm=narrow_view-seed=1942310406 logs/20260101-004021-mappo-map=small-agents=5-rm=narrow_view-seed=1364072973
+# Every seed of one configuration:
+uv run commons-game plot runs logs/mappo-map=small-agents=5-rm=narrow_view-phi=efficiency_x_peace/*
+
+# Or name the runs explicitly:
+uv run commons-game plot runs \
+    logs/mappo-map=small-agents=5-rm=narrow_view-phi=efficiency_x_peace/20260813-092316-seed=0 \
+    logs/mappo-map=small-agents=5-rm=narrow_view-phi=efficiency_x_peace/20260813-092316-seed=1
 ```
 
 Outputs:

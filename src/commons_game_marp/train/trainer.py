@@ -1,6 +1,5 @@
 import os
 import random
-import time
 import numpy as np
 from omegaconf import OmegaConf
 
@@ -9,8 +8,11 @@ from ..reward_model.preference_buffer import EpisodeRecord, PreferenceBuffer
 from ..reward_model.reward_model import RewardModel
 from ..reward_model.reward_trainer import RewardModelTrainer
 from .config import TrainerConfig
+from .console import TrainingConsole, format_metrics as _format_metrics
 from .logging_utils import ResultLogger
 from .registry import build_algorithm
+from .run_info import write_run_info
+from .run_paths import run_path
 from .video_utils import VideoRecorder
 from .metrics import compute_agent_step_metrics
 
@@ -23,11 +25,39 @@ class Trainer:
             self.config.seed = random.randint(0, 2**31 - 1)
         # Seed all random number generators
         self._seed_rngs(self.config.seed)
+        self.console = TrainingConsole.from_config(config.logging)
+        self.console.section("Setup")
         self.env = self._build_env()
         self.algorithm = build_algorithm(config.algorithm)
         self.algorithm.on_env_ready(self.env)
         self.logger = self._build_logger()
-    
+        self._announce_setup()
+
+    def _announce_setup(self) -> None:
+        """The parameters worth seeing at a glance when a run starts."""
+        env_cfg = self.config.env
+        # The algorithm resolves "auto" to a real device; fall back to the
+        # configured value for policies that never build a torch module.
+        device = getattr(
+            self.algorithm, "device", getattr(self.config.algorithm, "device", "n/a")
+        )
+        self.console.info(
+            f"algorithm      : {getattr(self.config.algorithm, 'name', 'unknown')} (device={device})"
+        )
+        self.console.info(f"episodes       : {self.config.episodes} x {env_cfg.ep_length} steps")
+        self.console.info(
+            f"environment    : map={env_cfg.map_type} agents={env_cfg.num_agents}"
+            f" view={env_cfg.agent_view_range} spawn={env_cfg.spawn_speed}"
+        )
+        self.console.info(f"seed           : {self.config.seed}")
+        log_cfg = self.config.logging
+        video = (
+            f"every {log_cfg.video_every_n_episodes} episodes" if log_cfg.video_enabled else "off"
+        )
+        self.console.info(f"video          : {video}")
+        self.console.info(f"run directory  : {self.logger.run_dir}")
+
+
     def _seed_rngs(self, seed: int) -> None:
         """Seed all random number generators for reproducibility."""
         random.seed(seed)
@@ -57,20 +87,16 @@ class Trainer:
 
     def _build_logger(self) -> ResultLogger:
         log_cfg = self.config.logging
-        algo = self.config.algorithm.name
-        rm_cfg = self.config.reward_model
-        run_name = log_cfg.run_name
-        if not run_name:
-            timestamp = time.strftime("%Y%m%d-%H%M%S")
-            run_name = f"{timestamp}-{algo}-map={self.config.env.map_type}-agents={self.config.env.num_agents}"
-        rm_suffix = f"rm={rm_cfg.mode}" if rm_cfg.enabled else "rm=off"
-        run_name = f"{run_name}-{rm_suffix}"
-        if self.config.seed is not None:
-            run_name = f"{run_name}-seed={self.config.seed}"
-        logger = ResultLogger(log_cfg.log_dir, run_name)
+        # Under Hydra the entry point hands us Hydra's own output directory, so
+        # `.hydra/`, the job log and the artifacts below stay together. Outside
+        # Hydra the same layout is derived from the config.
+        run_dir = log_cfg.run_dir or os.path.join(log_cfg.log_dir, run_path(self.config))
+        logger = ResultLogger(run_dir)
+        # Saved after the seed is resolved, so the snapshot records the seed
+        # actually used even when it was drawn at random.
         config_path = os.path.join(logger.run_dir, "config.yaml")
         OmegaConf.save(OmegaConf.structured(self.config), config_path)
-        print(f"Using random seed: {self.config.seed}")
+        write_run_info(self.config, logger.run_dir)
         return logger
 
     def _build_video_recorder(self) -> VideoRecorder:
@@ -147,6 +173,26 @@ class Trainer:
                 max_steps_per_sequence=rm_cfg.max_steps_per_sequence,
                 store_max_steps_per_agent=rm_cfg.store_max_steps_per_agent,
             )
+            self.console.section("Reward model")
+            self.console.info(f"mode / phi     : {rm_cfg.mode} / {rm_cfg.phi}")
+            self.console.info(f"input          : obs{tuple(obs_shape)} x {num_actions} actions")
+            self.console.info(f"device         : {rm_trainer.device}")
+            self.console.info(
+                f"warmup         : collecting preferences for {rm_cfg.warmup_episodes}"
+                " episodes before the first update"
+            )
+            self.console.info(
+                f"updates        : every {rm_cfg.update_every_env_steps} env steps,"
+                f" {rm_cfg.train_steps_per_update} steps of {rm_cfg.batch_pairs} pairs"
+            )
+            self.console.warn("policies learn from predicted rewards, not environment rewards")
+        else:
+            self.console.section("Reward model")
+            self.console.info("disabled -- policies learn from environment rewards")
+
+        self.console.section("Training")
+        self.console.start_episodes(self.config.episodes)
+        recent_rewards: list = []
 
         for episode in range(self.config.episodes):
             obs, infos = self.env.reset(seed=None)
@@ -231,6 +277,11 @@ class Trainer:
                 pref_buffer.add_episode(EpisodeRecord(agent_trajs=episode_agent_trajs, metrics=metrics))
             rm_metrics = {}
             if rm_cfg.enabled and (episode + 1) >= rm_cfg.warmup_episodes:
+                self.console.info_once(
+                    "rm-warmup-done",
+                    f"warmup complete after episode {episode + 1}"
+                    f" -- reward model training starts, buffer holds {len(pref_buffer)} episodes",
+                )
                 if (global_step - last_rm_update_step) >= rm_cfg.update_every_env_steps:
                     rm_metrics = rm_trainer.train(
                         pref_buffer,
@@ -240,9 +291,18 @@ class Trainer:
                         train_steps=rm_cfg.train_steps_per_update,
                     )
                     last_rm_update_step = global_step
+                    # Later updates are visible in the per-episode stats; the
+                    # first one is worth calling out because it is the moment
+                    # the predicted rewards stop being random.
+                    self.console.info_once(
+                        "rm-first-update",
+                        "first reward model update: "
+                        + (_format_metrics(rm_metrics) or "no metrics returned"),
+                    )
             if rm_cfg.enabled and (episode + 1) % rm_cfg.save_every_episodes == 0:
                 reward_model_path = os.path.join(self.logger.run_dir, "reward_model.pt")
                 reward_model.save(reward_model_path)
+                self.console.info(f"reward model checkpoint saved at episode {episode + 1}")
 
             algo_metrics = self.algorithm.on_episode_end(episode)
             if algo_metrics is None:
@@ -278,14 +338,48 @@ class Trainer:
                     if metrics:
                         episode_summary["social_metrics"] = metrics
                     self.logger.log_agent_episode_details(agent_id, episode, episode_summary)
-            video_recorder.finish()
+            video_path = video_recorder.finish()
+            if video_path is not None:
+                self.console.info(f"video saved: {video_path}")
+            self.console.episode_end(episode, self._episode_stats(payload))
+            recent_rewards.append(payload["reward_mean"])
 
+        self.console.close()
+        self.console.section("Finished")
         if hasattr(self.algorithm, "save"):
             model_path = os.path.join(self.logger.run_dir, "model_last.pt")
             self.algorithm.save(model_path)
+            self.console.info(f"policy saved   : {model_path}")
         if rm_cfg.enabled and reward_model is not None:
             reward_model_path = os.path.join(self.logger.run_dir, "reward_model_last.pt")
             reward_model.save(reward_model_path)
+            self.console.info(f"reward model   : {reward_model_path}")
 
         video_recorder.finalize()
         self.logger.close()
+        if recent_rewards:
+            # The last tenth of the run, but never fewer than 10 episodes --
+            # one episode's reward is too noisy to summarize a run with.
+            window = min(len(recent_rewards), max(10, len(recent_rewards) // 10))
+            tail = recent_rewards[-window:]
+            self.console.info(f"mean reward over the last {len(tail)} episodes: {np.mean(tail):.2f}")
+        self.console.info(f"env steps      : {global_step}")
+        self.console.info(f"artifacts      : {self.logger.run_dir}")
+
+    def _episode_stats(self, payload: dict) -> dict:
+        """The handful of numbers worth watching live, out of everything logged."""
+        stats = {"reward": payload["reward_mean"]}
+        if "reward_pred_mean" in payload:
+            stats["pred"] = payload["reward_pred_mean"]
+        social = payload.get("social_metrics")
+        if isinstance(social, dict):
+            for name in ("efficiency", "equality", "sustainability", "peace"):
+                if isinstance(social.get(name), (int, float)):
+                    stats[name[:3]] = float(social[name])
+        elif isinstance(social, (list, tuple)) and len(social) == 4:
+            for name, value in zip(("eff", "equ", "sus", "pea"), social):
+                stats[name] = float(value)
+        rm_metrics = payload.get("algo_metrics", {}).get("reward_model") or {}
+        if isinstance(rm_metrics.get("loss"), (int, float)):
+            stats["rm_loss"] = float(rm_metrics["loss"])
+        return stats

@@ -6,6 +6,7 @@ command line; see README for examples.
 """
 
 import hydra
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
 from .train.config import TrainerConfig, register_configs
@@ -20,6 +21,10 @@ def main(cfg: DictConfig) -> None:
     # dataclasses, so Trainer receives a real TrainerConfig rather than a
     # DictConfig -- no changes needed inside Trainer or the algorithms.
     config: TrainerConfig = OmegaConf.to_object(cfg)
+    # Hydra already created this directory and put `.hydra/` and the job log in
+    # it. Pointing the Trainer at it is what keeps a run's Hydra output and its
+    # artifacts in one place, for `--multirun` jobs as much as single runs.
+    config.logging.run_dir = HydraConfig.get().runtime.output_dir
     Trainer(config).train()
 
 

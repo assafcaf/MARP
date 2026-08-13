@@ -8,8 +8,10 @@ from torch.utils.tensorboard import SummaryWriter
 
 
 class ResultLogger:
-    def __init__(self, log_dir: str, run_name: str):
-        self.run_dir = os.path.join(log_dir, run_name)
+    def __init__(self, run_dir: str):
+        # Under Hydra this is `hydra.runtime.output_dir`, which already exists
+        # and already holds `.hydra/` and the job log.
+        self.run_dir = run_dir
         os.makedirs(self.run_dir, exist_ok=True)
         self.metrics_path = os.path.join(self.run_dir, "metrics.jsonl")
         self._metrics_file = open(self.metrics_path, "a", encoding="utf-8")

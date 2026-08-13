@@ -89,8 +89,21 @@ class RandomConfig:
 @dataclass
 class LoggingConfig:
     log_dir: str = "logs"
+    # Groups the runs of one configuration: `log_dir/<run_name>/<timestamp>-seed=N`.
+    # Left null, the group name is derived from the configuration itself.
     run_name: Optional[str] = None
+    # The run's own directory. Set by the Hydra entry point to
+    # `hydra.runtime.output_dir`, so Hydra's `.hydra/` snapshot and job log sit
+    # beside the metrics, videos and checkpoints. Null outside Hydra: a
+    # programmatic `Trainer(...)` derives the same layout from `log_dir`.
+    run_dir: Optional[str] = None
     log_interval: int = 1
+    # Console output: "auto" shows a progress bar on a terminal and periodic
+    # status lines when the stream is redirected, "bar"/"plain" force one of the
+    # two, "quiet" silences everything.
+    console: str = "auto"
+    # Episodes between status lines when no progress bar is shown.
+    status_every: int = 10
     video_enabled: bool = True
     video_every_n_episodes: int = 100
     video_max_steps: int = 600
@@ -146,9 +159,14 @@ def register_configs() -> None:
 
     Registering the dataclasses makes the YAML type-checked at composition
     time: an unknown or mistyped key fails at startup instead of silently
-    falling back to a default. Safe to call more than once.
+    falling back to a default. Also registers the resolvers `hydra.run.dir`
+    refers to, which must exist before composition. Safe to call more than once.
     """
     from hydra.core.config_store import ConfigStore
+
+    from .run_paths import register_resolvers
+
+    register_resolvers()
 
     cs = ConfigStore.instance()
     cs.store(name="base_config", node=TrainerConfig)

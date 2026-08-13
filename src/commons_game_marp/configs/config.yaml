@@ -16,8 +16,14 @@ hydra:
   # plotting scripts resolve the same paths they always have.
   job:
     chdir: false
+  # One directory per run, holding Hydra's `.hydra/` snapshot and job log next
+  # to the training artifacts, grouped by configuration:
+  #   logs/<algorithm>-map=..-agents=..-rm=../<timestamp>-seed=N/
+  # `commons.run_path` builds that path from the composed config; see
+  # train/run_paths.py. Single runs and sweep jobs share the layout, so a sweep
+  # over seeds fills one configuration directory with sibling runs.
   run:
-    dir: ${logging.log_dir}/hydra/${now:%Y-%m-%d_%H-%M-%S}
+    dir: ${logging.log_dir}/${commons.run_path:}
   sweep:
-    dir: ${logging.log_dir}/hydra/multirun/${now:%Y-%m-%d_%H-%M-%S}
-    subdir: ${hydra.job.num}
+    dir: ${logging.log_dir}
+    subdir: ${commons.run_path:}

@@ -1,0 +1,12 @@
+# @package _global_
+# The input-aggregation arm on its own -- every agent's trajectory is
+# concatenated into one scored sequence per episode. Sweep the seeds:
+#   uv run commons-game train -m +experiment=sequence_input_agg seed=0,1,2,3,4
+#
+# Everything the two arms share -- env=medium, algorithm=ippo, episodes and
+# `reward_model.phi` -- is inherited from sequence_narrow_vs_input_agg, so the
+# arms cannot drift apart from each other or from the comparison run. Only the
+# reward-model mode is set here.
+defaults:
+  - sequence_narrow_vs_input_agg
+  - override /reward_model: input_aggregation

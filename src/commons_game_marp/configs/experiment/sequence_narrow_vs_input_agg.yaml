@@ -7,7 +7,7 @@ defaults:
   - override /algorithm: ippo
   - override /reward_model: narrow_view
 
-episodes: 300
+episodes: 1000
 seed: 0
 reward_model:
-  phi: efficiency_x_sustainability
+  phi: efficiency_x_peace

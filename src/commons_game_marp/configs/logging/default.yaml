@@ -3,7 +3,10 @@ defaults:
 
 log_dir: logs
 run_name: null
+run_dir: null
 log_interval: 1
+console: auto
+status_every: 10
 video_enabled: true
 video_every_n_episodes: 100
 video_max_steps: 600

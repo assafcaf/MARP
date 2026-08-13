@@ -46,6 +46,29 @@ def test_random_normalizes_observations():
     assert config.algorithm.normalize_obs is True
 
 
+def _experiment_names():
+    import os
+
+    from commons_game_marp import configs
+
+    directory = os.path.join(os.path.dirname(configs.__file__), "experiment")
+    return sorted(f[: -len(".yaml")] for f in os.listdir(directory) if f.endswith(".yaml"))
+
+
+@pytest.mark.parametrize("preset", _experiment_names())
+def test_experiment_preset_composes(preset):
+    """Every preset must still compose against the schema.
+
+    `example.yaml` is the annotated template users copy, so it spells out every
+    key: a renamed or dropped field breaks it here rather than in someone's
+    first run.
+    """
+    config = _compose(f"+experiment={preset}")
+
+    assert isinstance(config, TrainerConfig)
+    assert config.algorithm.name in ("dqn", "ippo", "mappo", "random")
+
+
 def test_unknown_key_is_rejected():
     """Structured configs mean a typo is a startup error, not a silent default."""
     with pytest.raises(Exception):
