@@ -16,6 +16,7 @@ class FakeEnv:
     - `observation_space["curr_obs"].shape`
     - `action_space.n`
     - `agent_ids`, `num_envs`, `num_agents`
+    - `ep_length`, which a null `n_steps` resolves against
 
     If `on_env_ready` starts reading anything else from the env, add it here
     -- do not grow this into a general-purpose mock environment.
@@ -27,9 +28,11 @@ class FakeEnv:
     agent_ids = ["agent-0", "agent-1"]
     num_agents = 2
     num_envs = 1
+    ep_length = 600
 
-    def __init__(self, num_envs: int = 1) -> None:
+    def __init__(self, num_envs: int = 1, ep_length: int = 600) -> None:
         self.num_envs = num_envs
+        self.ep_length = ep_length
 
 
 @pytest.fixture

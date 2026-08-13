@@ -19,6 +19,30 @@ OUTCAST_POSITION = -99
 MAP = {"small": SMALL_HARVEST_MAP,
        "medium": MEDIUM_HARVEST_MAP}
 
+# Every key `compute_social_metrics` produces, zeroed. Kept in one place so a
+# freshly reset environment reports the same schema as a finished one -- a
+# consumer that reads `get_social_metrics()` before the first episode ends must
+# not see a dict that is missing half its keys.
+EMPTY_METRICS = {
+    "efficiency": 0.0,
+    "equality": 0.0,
+    "sustainability": 0.0,
+    "peace": 0.0,
+    "fire_attempts": 0.0,
+    "fire_sucsses": 0.0,
+    "fire_hit_rate": 0.0,
+    "apples_eaten": 0.0,
+    "apples_spawned": 0.0,
+    "apple_stock_mean": 0.0,
+    "apple_stock_min": 0.0,
+    "apple_stock_final": 0.0,
+    "depletion_fraction": 0.0,
+    "timeout_steps": 0.0,
+    "reward_min_agent": 0.0,
+    "reward_max_agent": 0.0,
+    "reward_std_agent": 0.0,
+}
+
 
 class HarvestCommonsEnv(MapEnv):
 
@@ -45,12 +69,16 @@ class HarvestCommonsEnv(MapEnv):
         self.timeout_record = {}
         self.fire_counter = 0
         self.fire_sucsses = 0
-        self.metrics = {"efficiency": 0,
-                "equality": 0,
-                "sustainability": 0,
-                "peace": 0,
-                "fire_attempts": 0,
-                "fire_sucsses": 0}
+        # Resource bookkeeping for the episode in progress. Apples are the
+        # commons: how many are standing, how many were taken and how many grew
+        # back is the difference between a sustainable policy and one that
+        # strips the map in the first hundred steps -- and none of it is
+        # recoverable from reward alone, because a depleted map and a
+        # never-harvested one both pay zero.
+        self.apple_stock_record = []
+        self.apples_spawned = 0
+        self.metrics = dict(EMPTY_METRICS)
+
     @property
     def action_space(self):
         agents = list(self.agents.values())
@@ -89,6 +117,9 @@ class HarvestCommonsEnv(MapEnv):
             self.fire_counter += int(action[agent_id] == 7)
 
         self.update_social_metrics(env_rewards)
+        # After `custom_map_update` has run, so this is the stock the next step
+        # begins with -- including whatever regrew this step.
+        self.apple_stock_record.append(int(np.count_nonzero(self.world_map == 'A')))
 
         if self.penalty:
             for agent_id, _ in self.agents.items():
@@ -112,13 +143,10 @@ class HarvestCommonsEnv(MapEnv):
     def custom_reset(self):
         """Initialize the walls and the apples"""
         # reset social metrics
-        self.metrics = {"efficiency": 0,
-                        "equality": 0,
-                        "sustainability": 0,
-                        "peace": 0,
-                        "fire_attempts": 0,
-                        "fire_sucsses": 0}
-        
+        self.metrics = dict(EMPTY_METRICS)
+        self.apple_stock_record = []
+        self.apples_spawned = 0
+
         for apple_point in self.apple_points:
             self.world_map[apple_point[0], apple_point[1]] = 'A'
    
@@ -133,6 +161,7 @@ class HarvestCommonsEnv(MapEnv):
         "See parent class"
         # spawn the apples
         new_apples = self.spawn_apples()
+        self.apples_spawned += len(new_apples)
         self.update_map(new_apples)
 
         # Outcast timed-out agents
@@ -241,18 +270,62 @@ class HarvestCommonsEnv(MapEnv):
         for agent_id, peace_record in self.timeout_record.items():
             timeout_steps += np.sum(peace_record)
         peace = (self.num_agents * self.ep_length - timeout_steps) / (self.num_agents * self.ep_length)
+
+        # Apples eaten, counted from the reward record rather than the map:
+        # the environment pays exactly +1 per apple consumed, and this record
+        # is the pre-penalty one (see `step`), so a FIRE penalty cannot
+        # masquerade as a harvest.
+        apples_eaten = sum(
+            int(np.count_nonzero(np.asarray(rewards) > 0))
+            for rewards in self.rewards_record.values()
+        )
+
+        stock = np.asarray(self.apple_stock_record, dtype=np.float64)
+        if stock.size:
+            apple_stock_mean = float(stock.mean())
+            apple_stock_min = float(stock.min())
+            apple_stock_final = float(stock[-1])
+            depletion_fraction = float(np.count_nonzero(stock == 0) / stock.size)
+        else:
+            apple_stock_mean = apple_stock_min = apple_stock_final = 0.0
+            depletion_fraction = 0.0
+
+        # Spread of per-agent returns. `equality` is a Gini coefficient and so
+        # says how unevenly the harvest was shared; these say who actually went
+        # hungry, which is the number that moves when one agent monopolises a
+        # patch while the Gini stays respectable.
+        agent_returns = np.asarray(list(sum_of_rewards.values()), dtype=np.float64)
+
         metrics = {"efficiency": efficiency,
                    "equality": equality,
                    "sustainability": sustainability,
                    "peace": peace,
                    "fire_attempts": self.fire_counter,
-                   "fire_sucsses": self.fire_sucsses}
+                   "fire_sucsses": self.fire_sucsses,
+                   "fire_hit_rate": (
+                       float(self.fire_sucsses) / self.fire_counter
+                       if self.fire_counter else 0.0
+                   ),
+                   "apples_eaten": float(apples_eaten),
+                   "apples_spawned": float(self.apples_spawned),
+                   "apple_stock_mean": apple_stock_mean,
+                   "apple_stock_min": apple_stock_min,
+                   "apple_stock_final": apple_stock_final,
+                   "depletion_fraction": depletion_fraction,
+                   "timeout_steps": float(timeout_steps),
+                   "reward_min_agent": float(agent_returns.min()),
+                   "reward_max_agent": float(agent_returns.max()),
+                   "reward_std_agent": float(agent_returns.std()),
+                   }
         self.metrics = metrics
         self.timeout_record = {}
         self.rewards_record = {}
         self.fire_counter = 0
         self.fire_sucsses = 0
-        
+        self.apple_stock_record = []
+        self.apples_spawned = 0
+
+
     def get_social_metrics(self):
         return self.metrics
     

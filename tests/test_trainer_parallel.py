@@ -187,6 +187,45 @@ def test_reward_model_update_rate_does_not_depend_on_num_envs(tmp_path):
     assert serial == parallel == 4
 
 
+@pytest.mark.parametrize("num_envs", [1, 2])
+def test_null_period_trains_the_reward_model_at_every_episode_end(tmp_path, num_envs):
+    """The default cadence: policy and reward model retrain together at each
+    episode boundary, so the update count is the iteration count."""
+    updates = _count_reward_model_updates(
+        tmp_path / f"n{num_envs}", num_envs=num_envs, episodes=4, every_steps=None
+    )
+    assert updates == 4 // num_envs
+
+
+def test_policy_and_reward_model_update_on_the_same_boundary(tmp_path):
+    """One PPO update per episode per env, over ep_length * num_envs
+    transitions, on the same boundary the reward model retrains on."""
+    from commons_game_marp.train.algorithms.ippo import IPPOAlgorithm
+
+    batches = []
+    original = IPPOAlgorithm._update_agent
+
+    def spy(self, agent_id):
+        buffer = self.buffers[agent_id]
+        batches.append(buffer.size() * buffer.num_envs)
+        return original(self, agent_id)
+
+    IPPOAlgorithm._update_agent = spy
+    try:
+        config = make_config(
+            tmp_path,
+            IPPOConfig(n_steps=None, batch_size=4, update_epochs=1, device="cpu"),
+            num_envs=2,
+            episodes=4,
+        )
+        Trainer(config).train()
+    finally:
+        IPPOAlgorithm._update_agent = original
+
+    # 2 agents x 2 iterations, every batch ep_length(5) * num_envs(2).
+    assert batches == [10, 10, 10, 10]
+
+
 def test_reward_model_checkpoints_at_the_configured_episode_period(tmp_path):
     """`episode + 1` only takes multiples of num_envs, so an exact modulo
     against save_every_episodes misses every period that is not itself a

@@ -289,6 +289,44 @@ reproducing.
   startup with an actionable message.
 - The existing suite passes unchanged at the `num_envs=1` default.
 
+## Addendum: update cadences (decided after implementation)
+
+Measuring the implemented trainer against the then-current defaults
+(`ep_length=600`, `ippo.n_steps=512`, `reward_model.update_every_env_steps=1000`)
+exposed three cadence problems. All three come from the same root cause: those
+checks run at iteration boundaries, and an iteration is now `num_envs` episodes
+wide.
+
+1. **Reward-model rate depended on `num_envs`.** Firing at most once per
+   boundary gave one update per 1200 env steps at `num_envs=1` and one per 2400
+   at `num_envs=4` — half the updates for the same experience. The trainer now
+   catches up one period at a time.
+2. **`save_every_episodes` used an exact modulo** against `episode + 1`, which
+   only takes multiples of `num_envs`; period 200 at `num_envs=3` fired every
+   600 episodes. Now a threshold.
+3. **`log_interval` had become iteration-denominated** in the rewrite, silently
+   multiplying the configured interval by `num_envs`. Back to episodes.
+
+Separately, `n_steps=512` against `ep_length=600` produced a 512-step update
+followed by an 88-step one every episode — below the 128 minibatch size, so
+half of all updates were undersized. This predated parallel environments.
+
+**Decision:** `n_steps` and `update_every_env_steps` both default to null,
+meaning *align to the episode boundary*. `n_steps=null` resolves to
+`env.ep_length`, giving one update per episode per environment over
+`ep_length * num_envs` transitions; `update_every_env_steps=null` retrains the
+reward model at that same boundary. Policy and reward model therefore retrain
+together at the end of every episode, and neither cadence depends on
+`num_envs`. Explicit integers still work and keep their old meaning.
+
+Measured at `ep_length=600` over 4 episodes:
+
+| `num_envs` | iterations | PPO batches per agent | RM updates |
+|---|---|---|---|
+| 1 | 4 | `[600, 600, 600, 600]` | 4 |
+| 2 | 2 | `[1200, 1200]` | 2 |
+| 4 | 1 | `[2400]` | 1 |
+
 ## Risks
 
 - **Interface change reaches all four algorithms.** Mitigated by the trainer

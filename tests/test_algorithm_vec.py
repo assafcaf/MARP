@@ -130,6 +130,33 @@ def test_ippo_buffer_keeps_one_column_per_env():
     assert np.stack(buffer.rewards, axis=0).shape == (4, 3)
 
 
+@pytest.mark.parametrize(
+    "algo_cls,config_cls", [(IPPOAlgorithm, IPPOConfig), (MAPPOAlgorithm, MAPPOConfig)]
+)
+def test_null_n_steps_aligns_the_update_with_the_episode(algo_cls, config_cls):
+    """The default cadence is one update per episode per environment, so a
+    600-step episode ends in exactly one update over 600 * num_envs
+    transitions -- no short trailing batch, and the same boundary the reward
+    model retrains on."""
+    algo, _ = build(algo_cls, config_cls(n_steps=None, device="cpu"), num_envs=3)
+    assert algo.n_steps == 600
+
+
+@pytest.mark.parametrize(
+    "algo_cls,config_cls", [(IPPOAlgorithm, IPPOConfig), (MAPPOAlgorithm, MAPPOConfig)]
+)
+def test_explicit_n_steps_is_still_honoured(algo_cls, config_cls):
+    algo, _ = build(algo_cls, config_cls(n_steps=128, device="cpu"), num_envs=3)
+    assert algo.n_steps == 128
+
+
+def test_n_steps_below_one_is_refused():
+    from commons_game_marp.train.algorithms.ippo import _resolve_n_steps
+
+    with pytest.raises(ValueError, match="n_steps"):
+        _resolve_n_steps(0, FakeEnv())
+
+
 def test_ippo_updates_after_n_steps_per_env_not_per_row():
     """`n_steps` is per-env, so the update batch is n_steps * num_envs."""
     algo, env = build(
