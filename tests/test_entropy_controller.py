@@ -134,3 +134,12 @@ def test_observe_entropy_is_inert_outside_adaptive_mode():
 def test_unknown_mode_is_rejected_at_construction():
     with pytest.raises(ValueError, match="ent_coef_mode"):
         EntropyController(_config(ent_coef_mode="linear"), 8, CPU)
+
+
+def test_mode_defaults_to_adaptive_when_the_field_is_absent():
+    """The duck-typed getattr path is a last resort, and it must not land on
+    the strategy this module exists to replace: a config that predates
+    ent_coef_mode gets the controller, not the schedule that let entropy
+    collapse unnoticed."""
+    controller = EntropyController(SimpleNamespace(), 8, CPU)
+    assert controller.mode == "adaptive"

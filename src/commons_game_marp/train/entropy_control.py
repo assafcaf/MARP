@@ -28,7 +28,7 @@ class EntropyController:
     MODES = ("fixed", "anneal", "adaptive")
 
     def __init__(self, config: Any, num_actions: int, device: torch.device) -> None:
-        self.mode = str(getattr(config, "ent_coef_mode", "anneal"))
+        self.mode = str(getattr(config, "ent_coef_mode", "adaptive"))
         if self.mode not in self.MODES:
             raise ValueError(
                 f"Unknown ent_coef_mode '{self.mode}'. Available: {list(self.MODES)}"
