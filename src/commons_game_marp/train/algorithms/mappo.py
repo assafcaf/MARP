@@ -8,6 +8,7 @@ from torch import nn
 from torch.distributions import Categorical
 
 from .base import Algorithm
+from .gae import compute_gae
 from .ippo import orthogonal_init
 from ..entropy_control import EntropyController
 
@@ -53,20 +54,14 @@ class RolloutBuffer:
     def compute_advantages(
         self, gamma: float, gae_lambda: float
     ) -> Tuple[np.ndarray, np.ndarray]:
-        rewards = np.stack(self.rewards, axis=0)
-        dones = np.stack(self.dones, axis=0).astype(np.float32)
-        values = np.stack(self.values, axis=0)
-        next_values = np.stack(self.next_values, axis=0)
-        T, N = rewards.shape
-        advantages = np.zeros((T, N), dtype=np.float32)
-        last_adv = np.zeros((N,), dtype=np.float32)
-        for t in reversed(range(T)):
-            mask = 1.0 - dones[t]
-            delta = rewards[t] + gamma * next_values[t] * mask - values[t]
-            last_adv = delta + gamma * gae_lambda * mask * last_adv
-            advantages[t] = last_adv
-        returns = advantages + values
-        return advantages, returns
+        return compute_gae(
+            rewards=np.stack(self.rewards, axis=0),
+            dones=np.stack(self.dones, axis=0),
+            values=np.stack(self.values, axis=0),
+            next_values=np.stack(self.next_values, axis=0),
+            gamma=gamma,
+            gae_lambda=gae_lambda,
+        )
 
 
 class MLPActor(nn.Module):
