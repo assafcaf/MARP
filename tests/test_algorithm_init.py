@@ -7,6 +7,7 @@ module attributes, so a future refactor that silently drops or misindents
 the behavior they guard will actually fail the suite.
 """
 
+import math
 from unittest.mock import patch
 
 import numpy as np
@@ -234,3 +235,53 @@ def test_dqn_train_step_clips_gradients():
     call = mock_clip.call_args
     called_max_norm = call.args[1] if len(call.args) > 1 else call.kwargs.get("max_norm")
     assert called_max_norm == max_grad_norm
+
+
+def test_ippo_builds_one_entropy_controller_per_agent(fake_env):
+    """IPPO's networks are per-agent, so its exploration pressure is too --
+    which is what makes a diverging agent visible in ent_coef_per_agent."""
+    from commons_game_marp.train.algorithms.ippo import IPPOAlgorithm
+    from commons_game_marp.train.config import IPPOConfig
+
+    algorithm = IPPOAlgorithm(IPPOConfig())
+    algorithm.on_env_ready(fake_env)
+
+    assert set(algorithm.ent_controllers) == set(fake_env.agents)
+    controllers = list(algorithm.ent_controllers.values())
+    assert len({id(c) for c in controllers}) == len(controllers)
+
+
+def test_ippo_defaults_to_adaptive_entropy(fake_env):
+    from commons_game_marp.train.algorithms.ippo import IPPOAlgorithm
+    from commons_game_marp.train.config import IPPOConfig
+
+    algorithm = IPPOAlgorithm(IPPOConfig())
+    algorithm.on_env_ready(fake_env)
+
+    for controller in algorithm.ent_controllers.values():
+        assert controller.mode == "adaptive"
+        assert controller.target_entropy == pytest.approx(0.6 * math.log(8))
+
+
+def test_ippo_reports_per_agent_entropy_metrics(fake_env):
+    """Per-agent divergence is the failure mode this change exists to catch,
+    so the per-agent series must survive into algo_metrics rather than being
+    averaged away."""
+    from commons_game_marp.train.algorithms.ippo import IPPOAlgorithm
+    from commons_game_marp.train.config import IPPOConfig
+
+    algorithm = IPPOAlgorithm(IPPOConfig())
+    algorithm.on_env_ready(fake_env)
+    algorithm._last_metrics = {
+        "entropy": 1.0,
+        "entropy_per_agent": {"agent-0": 1.5, "agent-1": 0.5},
+    }
+
+    metrics = algorithm.on_episode_end(0)
+
+    assert set(metrics["ent_coef_per_agent"]) == set(fake_env.agents)
+    assert metrics["ent_coef"] == pytest.approx(
+        sum(metrics["ent_coef_per_agent"].values()) / len(fake_env.agents)
+    )
+    assert metrics["target_entropy"] == pytest.approx(0.6 * math.log(8))
+    assert metrics["entropy_per_agent"] == {"agent-0": 1.5, "agent-1": 0.5}

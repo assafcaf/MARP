@@ -8,6 +8,7 @@ from torch import nn
 from torch.distributions import Categorical
 
 from .base import Algorithm
+from ..entropy_control import EntropyController
 
 
 def orthogonal_init(
@@ -194,7 +195,8 @@ class IPPOAlgorithm(Algorithm):
     
     Features:
     - Orthogonal weight initialization for stable training
-    - Entropy annealing (ent_coef → ent_coef_end over training)
+    - One EntropyController per agent (adaptive by default), targeting a
+      policy entropy rather than scheduling the coefficient directly
     - Value function clipping for stability
     """
 
@@ -211,7 +213,8 @@ class IPPOAlgorithm(Algorithm):
         self.critics: Dict[str, nn.Module] = {}
         self.optimizers: Dict[str, torch.optim.Optimizer] = {}
         self.buffers: Dict[str, SingleAgentBuffer] = {}
-        
+        self.ent_controllers: Dict[str, EntropyController] = {}
+
         self._last_step: Dict[str, Dict[str, Any]] = {}
         self._last_metrics: Dict[str, float] = {}
         
@@ -223,19 +226,10 @@ class IPPOAlgorithm(Algorithm):
         return True
 
     def set_total_episodes(self, total: int) -> None:
-        """Set total episodes for entropy annealing schedule."""
+        """Set total episodes for the anneal-mode entropy schedule."""
         self._total_episodes = total
-
-    def _get_entropy_coef(self) -> float:
-        """Get current entropy coefficient with linear annealing."""
-        ent_start = float(self.config.ent_coef)
-        ent_end = float(getattr(self.config, "ent_coef_end", ent_start))
-        
-        if self._total_episodes <= 0 or ent_start == ent_end:
-            return ent_start
-        
-        progress = min(1.0, self._current_episode / self._total_episodes)
-        return ent_start + (ent_end - ent_start) * progress
+        for controller in self.ent_controllers.values():
+            controller.set_total_episodes(total)
 
     def on_env_ready(self, env) -> None:
         obs_space = env.observation_space["curr_obs"]
@@ -274,6 +268,10 @@ class IPPOAlgorithm(Algorithm):
             self.critics[agent_id] = critic
             self.optimizers[agent_id] = optimizer
             self.buffers[agent_id] = SingleAgentBuffer()
+            self.ent_controllers[agent_id] = EntropyController(
+                self.config, self.num_actions, self.device
+            )
+            self.ent_controllers[agent_id].set_total_episodes(self._total_episodes)
 
     def _format_obs(self, obs: Dict[str, Any], agent_id: str) -> np.ndarray:
         img = obs[agent_id]["curr_obs"]
@@ -361,13 +359,23 @@ class IPPOAlgorithm(Algorithm):
         # Update any remaining data in buffers
         if any(buf.size() > 0 for buf in self.buffers.values()):
             self._update_all()
-        
-        # Track episode for entropy annealing
+
+        # Track episode for the anneal-mode schedule
         self._current_episode = episode + 1
-        
+        for controller in self.ent_controllers.values():
+            controller.set_episode(self._current_episode)
+
         metrics = dict(self._last_metrics)
-        # Add current entropy coefficient to metrics
-        metrics["ent_coef"] = self._get_entropy_coef()
+        per_agent = {
+            agent_id: controller.coefficient()
+            for agent_id, controller in self.ent_controllers.items()
+        }
+        metrics["ent_coef_per_agent"] = per_agent
+        metrics["ent_coef"] = sum(per_agent.values()) / len(per_agent) if per_agent else 0.0
+        if self.ent_controllers:
+            metrics["target_entropy"] = next(
+                iter(self.ent_controllers.values())
+            ).target_entropy
         self._last_metrics = {}
         return metrics
 
@@ -378,6 +386,7 @@ class IPPOAlgorithm(Algorithm):
         total_value = 0.0
         total_entropy = 0.0
         total_batches = 0
+        entropy_per_agent: Dict[str, float] = {}
 
         for agent_id in self.agent_ids:
             buffer = self.buffers[agent_id]
@@ -389,6 +398,7 @@ class IPPOAlgorithm(Algorithm):
             total_policy += metrics.get("policy_loss", 0.0)
             total_value += metrics.get("value_loss", 0.0)
             total_entropy += metrics.get("entropy", 0.0)
+            entropy_per_agent[agent_id] = metrics.get("entropy", 0.0)
             total_batches += 1
 
             buffer.clear()
@@ -399,10 +409,12 @@ class IPPOAlgorithm(Algorithm):
                 "policy_loss": total_policy / total_batches,
                 "value_loss": total_value / total_batches,
                 "entropy": total_entropy / total_batches,
+                "entropy_per_agent": entropy_per_agent,
             }
 
     def _update_agent(self, agent_id: str) -> Dict[str, float]:
-        """Perform PPO update for a single agent with value clipping and entropy annealing."""
+        """Perform PPO update for a single agent with value clipping and a
+        per-agent entropy-targeting coefficient."""
         buffer = self.buffers[agent_id]
         actor = self.actors[agent_id]
         critic = self.critics[agent_id]
@@ -431,9 +443,8 @@ class IPPOAlgorithm(Algorithm):
 
         T = len(buffer.obs)
         batch_size = min(int(self.config.batch_size), T)
-        
-        # Get current entropy coefficient (with annealing)
-        current_ent_coef = self._get_entropy_coef()
+
+        controller = self.ent_controllers[agent_id]
         vf_clip = getattr(self.config, "vf_clip", None)
 
         total_loss = 0.0
@@ -480,7 +491,8 @@ class IPPOAlgorithm(Algorithm):
                 else:
                     value_loss = (mb_returns - values_pred).pow(2).mean()
 
-                # Total loss with annealed entropy coefficient
+                # Total loss with the current entropy coefficient
+                current_ent_coef = controller.coefficient()
                 loss = (
                     policy_loss
                     + self.config.vf_coef * value_loss
@@ -489,11 +501,14 @@ class IPPOAlgorithm(Algorithm):
 
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(
-                    list(actor.parameters()) + list(critic.parameters()),
-                    self.config.max_grad_norm,
-                )
+                # Clipped separately: a joint norm lets a critic-loss spike
+                # scale the actor's gradient down with it. value_loss went
+                # 0.02 -> 0.14 around episode 100 of the analysed run, exactly
+                # where entropy first dropped.
+                nn.utils.clip_grad_norm_(actor.parameters(), self.config.max_grad_norm)
+                nn.utils.clip_grad_norm_(critic.parameters(), self.config.max_grad_norm)
                 optimizer.step()
+                controller.observe_entropy(float(entropy.item()))
 
                 total_loss += float(loss.item())
                 total_policy += float(policy_loss.item())
