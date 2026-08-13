@@ -1,5 +1,6 @@
 import os
 import random
+import time
 import numpy as np
 from omegaconf import OmegaConf
 
@@ -16,7 +17,8 @@ from .registry import build_algorithm
 from .run_info import write_run_info
 from .run_paths import run_path
 from .video_utils import VideoRecorder
-from .metrics import compute_agent_step_metrics
+from .episode_stats import EpisodeStats
+from .metrics import check_ate_last_apple_in_cluster, count_apples_around, disc_offsets
 
 
 def _average_social_metrics(per_env: list) -> dict:
@@ -59,6 +61,7 @@ class Trainer:
         self.algorithm.on_env_ready(self.env)
         self.logger = self._build_logger()
         self._saturated_episodes = 0
+        self._apple_offsets = disc_offsets(int(config.logging.nearby_apple_radius))
         self._announce_setup()
 
     def _announce_setup(self) -> None:
@@ -233,6 +236,54 @@ class Trainer:
         """
         return np.ascontiguousarray(observations[row])
 
+    def _row_step_metrics(self, harvested: np.ndarray):
+        """Apples in proximity, and whether a harvest emptied its cluster.
+
+        Computed for every row -- every agent of every environment -- because
+        both feed statistics that are only meaningful over the whole iteration.
+        The cluster check is skipped for rows that did not harvest, which is the
+        overwhelming majority of them: it walks the apple spawn-point list, and
+        running it unconditionally would dominate the step.
+
+        Positions are read off the live agent objects rather than recomputed
+        from observations, so an agent serving a timeout (parked at
+        `OUTCAST_POSITION`) correctly contributes a zero apple count.
+        """
+        vec = self.env
+        offsets = self._apple_offsets
+        nearby = np.zeros(vec.num_rows, dtype=np.int64)
+        last_in_cluster = np.zeros(vec.num_rows, dtype=bool)
+        for env_idx, env in enumerate(vec.envs):
+            base = env_idx * vec.num_agents
+            for agent_idx, agent_id in enumerate(vec.agent_ids):
+                row = base + agent_idx
+                agent = env.agents[agent_id]
+                position = agent.get_pos()
+                nearby[row] = count_apples_around(agent.grid, position, offsets)
+                if harvested[row]:
+                    last_in_cluster[row] = check_ate_last_apple_in_cluster(
+                        position, env.apple_points, env.world_map
+                    )
+        return nearby, last_in_cluster
+
+    @staticmethod
+    def _env_rewards(infos, rewards: np.ndarray) -> np.ndarray:
+        """The unpenalised environment reward for every row.
+
+        `HarvestCommonsEnv.step` puts it on the info dict as `r`; the array the
+        vector env returns carries the -1 FIRE penalty instead when
+        `env.penalty` is on. Every harvest-conditioned statistic keys off this,
+        so reading the wrong one would count a fired beam as an apple missed and
+        a penalised step as a non-harvest.
+        """
+        return np.asarray(
+            [
+                float(info["r"]) if "r" in info else float(rewards[row])
+                for row, info in enumerate(infos)
+            ],
+            dtype=np.float64,
+        )
+
     def train(self) -> None:
         # Set total episodes for algorithms that support entropy annealing.
         # Counted in iterations, because `on_episode_end` -- which advances the
@@ -308,6 +359,11 @@ class Trainer:
         agent_ids = vec.agent_ids
         num_rows = vec.num_rows
 
+        log_cfg = self.config.logging
+        detailed_metrics = bool(log_cfg.detailed_metrics)
+        histogram_every = max(0, int(log_cfg.histogram_every_n_episodes))
+        next_histogram_episode = histogram_every if histogram_every else None
+
         for iteration in range(self.iterations):
             # `episode` stays an episode count, not an iteration count, so runs
             # with different num_envs overlay on one x-axis.
@@ -334,6 +390,20 @@ class Trainer:
             )
             step_count = 0
             video_recorder.start(episode)
+            iteration_start = time.perf_counter()
+            # The unpenalised environment reward, kept alongside the reward the
+            # policy actually received. With `env.penalty` on the two differ,
+            # and only this one answers "how many apples did they get".
+            episode_env_rewards = np.zeros(num_rows, dtype=np.float64)
+            episode_stats = (
+                EpisodeStats(
+                    num_actions=int(vec.action_space.n),
+                    num_rows=num_rows,
+                    track_reward_model=rm_cfg.enabled,
+                )
+                if detailed_metrics
+                else None
+            )
 
             for step in range(self.config.env.ep_length):
                 actions = self.algorithm.act(obs, step)
@@ -367,30 +437,38 @@ class Trainer:
                 video_recorder.record(vec.envs[0], step)
                 episode_rewards += rewards
 
-                # Track detailed step data per agent, for environment 0 only.
+                env_rewards = self._env_rewards(infos, rewards)
+                episode_env_rewards += env_rewards
+                harvested = env_rewards > 0
+
+                # One pass covers both consumers, so the apple counting is done
+                # once whether it is headed for TensorBoard, the per-agent CSV,
+                # or both.
+                if episode_stats is not None or agent_episode_details is not None:
+                    nearby_apples, last_in_cluster = self._row_step_metrics(harvested)
+                if episode_stats is not None:
+                    episode_stats.record_step(
+                        actions=actions,
+                        env_rewards=env_rewards,
+                        nearby_apples=nearby_apples,
+                        last_in_cluster=last_in_cluster,
+                        pred_rewards=pred_rewards,
+                    )
+
+                # Track detailed step data per agent, for environment 0 only:
+                # logging all num_envs would multiply the CSV volume for data
+                # already summarized in metrics.jsonl.
                 if agent_episode_details is not None:
                     for row, agent_id in enumerate(agent_ids):
-                        # Check if an apple was eaten (reward > 0 indicates apple consumption)
-                        apple_eaten = bool(rewards[row] > 0)
-
-                        # Compute agent-specific metrics
-                        agent = vec.envs[0].agents[agent_id]
-                        metrics = compute_agent_step_metrics(
-                            agent=agent,
-                            env=vec.envs[0],
-                            reward=float(rewards[row]),
-                            apple_eaten=apple_eaten,
-                            nearby_radius=2,
-                        )
-
                         step_data = {
                             "step": step,
                             "action": int(actions[row]),
                             "reward": float(rewards[row]),
+                            "env_reward": float(env_rewards[row]),
                             "done": bool(dones[row]),
-                            "apple_eaten": apple_eaten,
-                            "nearby_apples": metrics["nearby_apples"],
-                            "ate_last_apple_in_cluster": metrics["ate_last_apple_in_cluster"],
+                            "apple_eaten": bool(harvested[row]),
+                            "nearby_apples": int(nearby_apples[row]),
+                            "ate_last_apple_in_cluster": bool(last_in_cluster[row]),
                         }
                         if pred_rewards is not None:
                             step_data["predicted_reward"] = float(pred_rewards[row])
@@ -471,8 +549,11 @@ class Trainer:
                 algo_metrics["reward_model"] = rm_metrics
             self._watch_entropy_saturation(algo_metrics)
 
+            iteration_seconds = time.perf_counter() - iteration_start
+
             # Averaged across the num_envs episodes this iteration completed.
             by_env_agent = episode_rewards.reshape(num_envs, num_agents)
+            env_by_env_agent = episode_env_rewards.reshape(num_envs, num_agents)
             payload = {
                 "episode": episode,
                 "num_envs": num_envs,
@@ -483,9 +564,31 @@ class Trainer:
                     agent_id: float(by_env_agent[:, i].mean())
                     for i, agent_id in enumerate(agent_ids)
                 },
+                # Identical to `reward_*` unless `env.penalty` is on, in which
+                # case these are the harvest and those are what the policy saw.
+                "reward_env_sum": float(env_by_env_agent.sum(axis=1).mean()),
+                "reward_env_mean": float(episode_env_rewards.mean()),
+                "reward_env_per_agent": {
+                    agent_id: float(env_by_env_agent[:, i].mean())
+                    for i, agent_id in enumerate(agent_ids)
+                },
                 "social_metrics": metrics,
                 "algo_metrics": algo_metrics,
+                "time": {
+                    "iteration_sec": float(iteration_seconds),
+                    # Agent-steps per second, matching the reference's `time/fps`.
+                    "fps": (
+                        float(num_rows * step_count / iteration_seconds)
+                        if iteration_seconds > 0
+                        else 0.0
+                    ),
+                    "elapsed_hours": (time.time() - self.logger.start_time) / 3600.0,
+                },
             }
+            if episode_stats is not None:
+                sections = episode_stats.result()
+                if sections:
+                    payload["sections"] = sections
             if rm_cfg.enabled and episode_pred_rewards is not None:
                 pred_by_env_agent = episode_pred_rewards.reshape(num_envs, num_agents)
                 payload["reward_pred_sum"] = float(pred_by_env_agent.sum(axis=1).mean())
@@ -502,6 +605,21 @@ class Trainer:
                 self.logger.log_episode(payload)
                 while next_log_episode <= episode:
                     next_log_episode += max(1, int(self.config.logging.log_interval))
+            # Same threshold-and-catch-up shape as the reward-model checkpoint,
+            # for the same reason: `episode + 1` only takes multiples of
+            # num_envs, so a modulo would miss every interval that is not itself
+            # a multiple of num_envs.
+            if next_histogram_episode is not None and (episode + 1) >= next_histogram_episode:
+                histograms = {
+                    "reward/agent_hist": episode_rewards.tolist(),
+                }
+                if episode_stats is not None:
+                    predicted = episode_stats.predicted_values()
+                    if predicted.size:
+                        histograms["rm_pred/hist"] = predicted.tolist()
+                self.logger.log_histograms(episode, histograms)
+                while next_histogram_episode <= (episode + 1):
+                    next_histogram_episode += histogram_every
             # Log detailed agent episode data to separate files, environment 0.
             if agent_episode_details is not None:
                 for i, agent_id in enumerate(agent_ids):

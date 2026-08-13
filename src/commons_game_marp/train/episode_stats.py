@@ -134,6 +134,16 @@ class EpisodeStats:
             self._pred_rewards.append(np.asarray(pred_rewards, dtype=np.float64))
         self.steps += 1
 
+    def predicted_values(self) -> np.ndarray:
+        """Every predicted reward recorded this iteration, flattened.
+
+        For the histogram writer, which wants the distribution rather than the
+        summary statistics `result` reduces it to.
+        """
+        if not self._pred_rewards:
+            return np.empty(0, dtype=np.float64)
+        return np.concatenate(self._pred_rewards)
+
     def result(self) -> Dict[str, Dict[str, float]]:
         """Flat metric sections, keyed by TensorBoard tag prefix."""
         if self.steps == 0:
