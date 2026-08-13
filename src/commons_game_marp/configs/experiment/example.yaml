@@ -80,6 +80,18 @@ env:
   # buffer.
   num_frames: 1
 
+  # Independent environment copies stepped in lockstep. Each policy update then
+  # draws on num_envs decorrelated rollouts instead of one long correlated
+  # trajectory. `episodes` stays the TOTAL budget: at num_envs=4 a 1000-episode
+  # run is 250 iterations of 4 episodes, so the sample budget is unchanged and
+  # runs stay comparable. `episodes` must be divisible by num_envs.
+  #
+  # Stepping is serial -- this buys sample decorrelation, not wall-clock speed,
+  # and per-step cost grows linearly with num_envs. Note that `n_steps` counts
+  # per-env timesteps, so the update batch is n_steps * num_envs: a run at
+  # num_envs=4 is not hyperparameter-identical to one at num_envs=1.
+  num_envs: 1
+
   # Steps per episode.
   ep_length: 600
 
