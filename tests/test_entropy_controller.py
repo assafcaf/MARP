@@ -86,18 +86,33 @@ def test_adaptive_lowers_the_coefficient_when_entropy_is_above_target():
     assert controller.coefficient() < before
 
 
-def test_adaptive_respects_the_upper_clamp_without_windup():
-    """Clamping only the read value would let log_ent_coef integrate far past
-    the ceiling and then take just as long to come back. The parameter itself
-    must be clamped."""
-    controller = EntropyController(_config(ent_coef_lr=0.5), 8, CPU)
-    for _ in range(200):
-        controller.observe_entropy(0.0)
-    assert controller.coefficient() == pytest.approx(0.5)
-
-    for _ in range(5):
+def _steps_to_leave_ceiling(controller, limit=100):
+    """Steps of maximum-entropy feedback before the coefficient leaves its ceiling."""
+    for step in range(1, limit + 1):
         controller.observe_entropy(2.079)
-    assert controller.coefficient() < 0.5
+        if controller.coefficient() < 0.5:
+            return step
+    raise AssertionError(f"still pinned at the ceiling after {limit} steps")
+
+
+def test_adaptive_recovery_does_not_depend_on_how_long_it_saturated():
+    """The anti-windup guarantee. Clamping only the value `coefficient()`
+    returns would let log_ent_coef keep integrating while pinned, so a longer
+    saturation would take proportionally longer to unwind. Clamping the
+    parameter itself bounds it, and recovery becomes constant -- Adam's
+    momentum contributes a few steps of lag either way, which is why this
+    asserts equality between two runs rather than a fixed step count."""
+    brief = EntropyController(_config(ent_coef_lr=0.5), 8, CPU)
+    for _ in range(200):
+        brief.observe_entropy(0.0)
+    assert brief.coefficient() == pytest.approx(0.5)
+
+    long_haul = EntropyController(_config(ent_coef_lr=0.5), 8, CPU)
+    for _ in range(2000):
+        long_haul.observe_entropy(0.0)
+    assert long_haul.coefficient() == pytest.approx(0.5)
+
+    assert _steps_to_leave_ceiling(long_haul) == _steps_to_leave_ceiling(brief)
 
 
 def test_adaptive_respects_the_lower_clamp():
