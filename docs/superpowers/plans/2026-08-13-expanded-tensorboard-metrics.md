@@ -32,11 +32,11 @@
 - Produces: `disc_offsets(radius: int) -> np.ndarray` of shape `(K, 2)`, integer row/col offsets with `sqrt(dr^2+dc^2) <= radius`; `count_apples_around(world_map: np.ndarray, pos, offsets: np.ndarray) -> int`.
 - `count_nearby_apples` keeps its current signature and result.
 
-- [ ] **Step 1: Write failing tests** in `tests/test_metrics.py` asserting `count_apples_around` matches `count_nearby_apples` on a hand-built map, and returns 0 for an agent at `OUTCAST_POSITION`.
-- [ ] **Step 2:** Run `.venv/bin/python -m pytest tests/test_metrics.py -v`. Expect `ImportError`.
-- [ ] **Step 3:** Implement `disc_offsets` (cached by radius) and `count_apples_around` using a bounds-masked gather over `world_map`.
-- [ ] **Step 4:** Run the tests. Expect PASS, including the pre-existing ones.
-- [ ] **Step 5:** Commit `perf(metrics): vectorise nearby-apple counting`.
+- [x] **Step 1: Write failing tests** in `tests/test_metrics.py` asserting `count_apples_around` matches `count_nearby_apples` on a hand-built map, and returns 0 for an agent at `OUTCAST_POSITION`.
+- [x] **Step 2:** Run `.venv/bin/python -m pytest tests/test_metrics.py -v`. Expect `ImportError`.
+- [x] **Step 3:** Implement `disc_offsets` (cached by radius) and `count_apples_around` using a bounds-masked gather over `world_map`.
+- [x] **Step 4:** Run the tests. Expect PASS, including the pre-existing ones.
+- [x] **Step 5:** Commit `perf(metrics): vectorise nearby-apple counting`.
 
 ---
 
@@ -49,11 +49,11 @@
 **Interfaces:**
 - Produces: `HarvestCommonsEnv.compute_social_metrics()` output gains `fire_hit_rate`, `apples_eaten`, `apples_spawned`, `apple_stock_mean`, `apple_stock_min`, `apple_stock_final`, `depletion_fraction`, `timeout_steps`, `reward_min_agent`, `reward_max_agent`, `reward_std_agent`.
 
-- [ ] **Step 1:** Write failing tests: run a short episode with a scripted action sequence, assert every new key is present, finite, and that `apples_eaten` equals the number of positive rewards; assert `compute_phi` is unchanged for all `phi_key`s.
-- [ ] **Step 2:** Run; expect KeyError.
-- [ ] **Step 3:** Track `self._apple_stock`, `self._apples_spawned`, `self._apples_eaten` in `step`/`custom_map_update`/`custom_reset`; emit the new keys from `compute_social_metrics` and reset them there.
-- [ ] **Step 4:** Run `tests/test_env_metrics.py tests/test_env_penalty.py`. Expect PASS.
-- [ ] **Step 5:** Commit `feat(env): record per-episode resource and fairness metrics`.
+- [x] **Step 1:** Write failing tests: run a short episode with a scripted action sequence, assert every new key is present, finite, and that `apples_eaten` equals the number of positive rewards; assert `compute_phi` is unchanged for all `phi_key`s.
+- [x] **Step 2:** Run; expect KeyError.
+- [x] **Step 3:** Track `self._apple_stock`, `self._apples_spawned`, `self._apples_eaten` in `step`/`custom_map_update`/`custom_reset`; emit the new keys from `compute_social_metrics` and reset them there.
+- [x] **Step 4:** Run `tests/test_env_metrics.py tests/test_env_penalty.py`. Expect PASS.
+- [x] **Step 5:** Commit `feat(env): record per-episode resource and fairness metrics`.
 
 ---
 
@@ -71,11 +71,11 @@
     `record_step(actions, env_rewards, nearby_apples, last_in_cluster, pred_rewards=None)` (all `(num_rows,)` arrays) and
     `result() -> dict[str, dict[str, float]]` keyed by section: `action`, `harvest`, `rm_on_action`, `rm_outcome_avg`, `rm_outcome_std`, `rm_outcome`, `rm_by_nearby_apples`, `rm_pred`.
 
-- [ ] **Step 1:** Write failing tests covering: action fractions sum to 1; `turn` merges 5 and 6; entropy of a uniform distribution equals `ln(7)`; harvest rate and `last_in_cluster_rate`; per-action predicted-reward means; `apple_eaten`/`no_apple_eaten` means, stds, `delta`, and `separation`; nearby-apple bucket partitioning; step correlation on a perfectly correlated input equals 1.0; **empty subsets are absent from the result, never NaN**; `track_reward_model=False` emits no `rm_*` sections.
-- [ ] **Step 2:** Run; expect `ModuleNotFoundError`.
-- [ ] **Step 3:** Implement with per-step appends into python lists of small numpy arrays, concatenated once in `result()`.
-- [ ] **Step 4:** Run `.venv/bin/python -m pytest tests/test_episode_stats.py -v`. Expect PASS.
-- [ ] **Step 5:** Commit `feat(train): add episode statistics accumulator`.
+- [x] **Step 1:** Write failing tests covering: action fractions sum to 1; `turn` merges 5 and 6; entropy of a uniform distribution equals `ln(7)`; harvest rate and `last_in_cluster_rate`; per-action predicted-reward means; `apple_eaten`/`no_apple_eaten` means, stds, `delta`, and `separation`; nearby-apple bucket partitioning; step correlation on a perfectly correlated input equals 1.0; **empty subsets are absent from the result, never NaN**; `track_reward_model=False` emits no `rm_*` sections.
+- [x] **Step 2:** Run; expect `ModuleNotFoundError`.
+- [x] **Step 3:** Implement with per-step appends into python lists of small numpy arrays, concatenated once in `result()`.
+- [x] **Step 4:** Run `.venv/bin/python -m pytest tests/test_episode_stats.py -v`. Expect PASS.
+- [x] **Step 5:** Commit `feat(train): add episode statistics accumulator`.
 
 ---
 
@@ -89,11 +89,11 @@
 **Interfaces:**
 - Produces: `LoggingConfig.detailed_metrics: bool = True`, `LoggingConfig.nearby_apple_radius: int = 2`, `LoggingConfig.histogram_every_n_episodes: int = 0`.
 
-- [ ] **Step 1:** Write a failing test asserting the three defaults compose under Hydra.
-- [ ] **Step 2:** Run; expect failure.
-- [ ] **Step 3:** Add the fields with explanatory comments.
-- [ ] **Step 4:** Run `tests/test_hydra_configs.py tests/test_config_num_envs.py`. Expect PASS.
-- [ ] **Step 5:** Commit `feat(config): add detailed-metrics logging switches`.
+- [x] **Step 1:** Write a failing test asserting the three defaults compose under Hydra.
+- [x] **Step 2:** Run; expect failure.
+- [x] **Step 3:** Add the fields with explanatory comments.
+- [x] **Step 4:** Run `tests/test_hydra_configs.py tests/test_config_num_envs.py`. Expect PASS.
+- [x] **Step 5:** Commit `feat(config): add detailed-metrics logging switches`.
 
 ---
 
@@ -107,11 +107,11 @@
 - Consumes: section dicts from Task 3, `reward_env_*` payload keys, `time` payload key.
 - Produces: `ResultLogger.log_episode` routes `payload["sections"]` — `{section_name: {tag: value}}` — to `add_scalar(f"{section}/{tag}", …)`, and flattens nested `algo_metrics` dicts to `algo/<name>/<agent_id>`.
 
-- [ ] **Step 1:** Write failing tests using a fake writer: sections route to the right tags, non-finite values are dropped, nested algo dicts flatten, existing tags still emitted.
-- [ ] **Step 2:** Run; expect failure.
-- [ ] **Step 3:** Implement `_log_sections` and the nested-dict branch; keep every existing line.
-- [ ] **Step 4:** Run `tests/test_logging_sections.py`. Expect PASS.
-- [ ] **Step 5:** Commit `feat(logging): route metric sections to tensorboard`.
+- [x] **Step 1:** Write failing tests using a fake writer: sections route to the right tags, non-finite values are dropped, nested algo dicts flatten, existing tags still emitted.
+- [x] **Step 2:** Run; expect failure.
+- [x] **Step 3:** Implement `_log_sections` and the nested-dict branch; keep every existing line.
+- [x] **Step 4:** Run `tests/test_logging_sections.py`. Expect PASS.
+- [x] **Step 5:** Commit `feat(logging): route metric sections to tensorboard`.
 
 ---
 
@@ -125,11 +125,11 @@
 - Consumes: everything above.
 - Produces: `metrics.jsonl` records gain `sections`, `reward_env_sum`, `reward_env_mean`, `reward_env_per_agent`, `time`.
 
-- [ ] **Step 1:** Write a failing end-to-end test: two-episode run with `num_envs=2`, `detailed_metrics=True`, reward model off; assert the JSONL record carries the `action` and `harvest` sections with sane values, and `reward_env_*`; and a second test with `detailed_metrics=False` asserting they are absent.
-- [ ] **Step 2:** Run; expect failure.
-- [ ] **Step 3:** Compute `nearby_apples` and `last_in_cluster` for **all rows** each step, feed `EpisodeStats`, read `infos[row]['r']` for the unpenalised reward, time the iteration, and attach the sections to the payload. Keep the existing env-0 CSV path working by reading from the same per-row arrays.
-- [ ] **Step 4:** Run the full suite `.venv/bin/python -m pytest tests/ -q`. Expect PASS.
-- [ ] **Step 5:** Commit `feat(train): log action, harvest and reward-model diagnostics`.
+- [x] **Step 1:** Write a failing end-to-end test: two-episode run with `num_envs=2`, `detailed_metrics=True`, reward model off; assert the JSONL record carries the `action` and `harvest` sections with sane values, and `reward_env_*`; and a second test with `detailed_metrics=False` asserting they are absent.
+- [x] **Step 2:** Run; expect failure.
+- [x] **Step 3:** Compute `nearby_apples` and `last_in_cluster` for **all rows** each step, feed `EpisodeStats`, read `infos[row]['r']` for the unpenalised reward, time the iteration, and attach the sections to the payload. Keep the existing env-0 CSV path working by reading from the same per-row arrays.
+- [x] **Step 4:** Run the full suite `.venv/bin/python -m pytest tests/ -q`. Expect PASS.
+- [x] **Step 5:** Commit `feat(train): log action, harvest and reward-model diagnostics`.
 
 ---
 
@@ -140,11 +140,11 @@
 - Create: `docs/metrics.md`
 - Test: `tests/test_logging_sections.py`
 
-- [ ] **Step 1:** Write a failing test that `histogram_every_n_episodes=2` produces `rm_pred/hist` and `reward/agent_hist` on even episodes only.
-- [ ] **Step 2:** Run; expect failure.
-- [ ] **Step 3:** Implement `log_histograms`, gate it in the trainer, and write `docs/metrics.md` documenting every tag with its definition and how to read it.
-- [ ] **Step 4:** Run the full suite.
-- [ ] **Step 5:** Commit `docs(metrics): document the tensorboard tag catalog`.
+- [x] **Step 1:** Write a failing test that `histogram_every_n_episodes=2` produces `rm_pred/hist` and `reward/agent_hist` on even episodes only.
+- [x] **Step 2:** Run; expect failure.
+- [x] **Step 3:** Implement `log_histograms`, gate it in the trainer, and write `docs/metrics.md` documenting every tag with its definition and how to read it.
+- [x] **Step 4:** Run the full suite.
+- [x] **Step 5:** Commit `docs(metrics): document the tensorboard tag catalog`.
 
 ---
 
