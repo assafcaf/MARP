@@ -19,6 +19,12 @@ from .metrics import compute_agent_step_metrics
 
 
 class Trainer:
+    # Above this projected resident size, the preference buffer gets a warning
+    # at startup. PreferenceBuffer's docstring records a real OOM from this
+    # arithmetic; widening the view and stacking frames both push straight
+    # into it (view 7 + 2 frames is ~20 GB at the default buffer length).
+    BUFFER_WARN_BYTES = 8 * 1024**3
+
     def __init__(self, config: TrainerConfig):
         self.config = config
         # Generate random seed if None
@@ -58,7 +64,7 @@ class Trainer:
         )
         self.console.info(f"video          : {video}")
         self.console.info(f"run directory  : {self.logger.run_dir}")
-
+        self._warn_if_buffer_large()
 
     def _seed_rngs(self, seed: int) -> None:
         """Seed all random number generators for reproducibility."""
@@ -90,6 +96,33 @@ class Trainer:
         if num_frames > 1:
             return FrameStackEnv(env, num_frames)
         return env
+
+    def _projected_buffer_bytes(self) -> int:
+        """Resident size the preference buffer will reach once full.
+
+        Frames are stored raw, so this is the frame size times the number of
+        frames retained: one per agent per step, for every episode the ring
+        buffer holds. `store_max_steps_per_agent` subsamples at insertion time
+        and so replaces `ep_length` when it is set.
+        """
+        env_cfg = self.config.env
+        rm_cfg = self.config.reward_model
+        side = 2 * env_cfg.agent_view_range + 1
+        bytes_per_frame = side * side * 3 * int(getattr(env_cfg, "num_frames", 1))
+        steps = rm_cfg.store_max_steps_per_agent or env_cfg.ep_length
+        return bytes_per_frame * rm_cfg.max_episodes_in_buffer * steps * env_cfg.num_agents
+
+    def _warn_if_buffer_large(self) -> None:
+        if not self.config.reward_model.enabled:
+            return
+        projected = self._projected_buffer_bytes()
+        if projected <= self.BUFFER_WARN_BYTES:
+            return
+        self.console.warn(
+            f"preference buffer will reach ~{projected / 1024**3:.1f} GB when full. "
+            "Lower reward_model.max_episodes_in_buffer or set "
+            "reward_model.store_max_steps_per_agent to bound it."
+        )
 
     def _build_logger(self) -> ResultLogger:
         log_cfg = self.config.logging
