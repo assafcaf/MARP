@@ -64,7 +64,12 @@ class FrameStackEnv:
         self._stacks = {}
         stacked = {}
         for agent_id, agent_obs in observations.items():
-            frame = np.asarray(agent_obs["curr_obs"], dtype=np.uint8)
+            # np.array(..., copy=True), not np.asarray: asarray would alias a
+            # uint8 input rather than copy it, and the deque must own its
+            # frames -- otherwise an env that reuses its observation buffer
+            # between steps silently converges every stack slot on the
+            # newest frame's values.
+            frame = np.array(agent_obs["curr_obs"], dtype=np.uint8, copy=True)
             self._stacks[agent_id] = deque(
                 [frame] * self.num_frames, maxlen=self.num_frames
             )
@@ -74,7 +79,7 @@ class FrameStackEnv:
     def _append(self, observations: Dict[str, Any]) -> Dict[str, Any]:
         stacked = {}
         for agent_id, agent_obs in observations.items():
-            frame = np.asarray(agent_obs["curr_obs"], dtype=np.uint8)
+            frame = np.array(agent_obs["curr_obs"], dtype=np.uint8, copy=True)
             if agent_id not in self._stacks:
                 self._stacks[agent_id] = deque(
                     [frame] * self.num_frames, maxlen=self.num_frames

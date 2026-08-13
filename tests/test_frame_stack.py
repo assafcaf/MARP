@@ -135,3 +135,31 @@ def test_num_frames_below_two_is_rejected():
     silently accepted it would make the default path non-identical."""
     with pytest.raises(ValueError, match="num_frames"):
         FrameStackEnv(_StubEnv(), num_frames=1)
+
+
+class _MutatingBufferEnv(_StubEnv):
+    """Returns the same array object every step, mutated in place.
+
+    A real env is free to do this as an allocation optimisation. A wrapper
+    that stored references rather than copies would show N copies of the
+    newest frame and nobody would notice, because the shapes and dtypes
+    would all still be right.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._buffer = np.zeros(self.shape, dtype=np.uint8)
+
+    def _frame(self):
+        self._buffer[:] = self.counter
+        return self._buffer
+
+
+def test_stack_owns_its_frames_when_the_env_reuses_its_buffer():
+    wrapped = FrameStackEnv(_MutatingBufferEnv(), num_frames=2)
+    wrapped.reset()
+    obs, _, _, _ = wrapped.step({"agent-0": 0, "agent-1": 0})
+
+    frame = obs["agent-0"]["curr_obs"]
+    assert np.all(frame[:, :, 0:3] == 1), "oldest frame was overwritten by aliasing"
+    assert np.all(frame[:, :, 3:6] == 2)
