@@ -285,3 +285,47 @@ def test_ippo_reports_per_agent_entropy_metrics(fake_env):
     )
     assert metrics["target_entropy"] == pytest.approx(0.6 * math.log(8))
     assert metrics["entropy_per_agent"] == {"agent-0": 1.5, "agent-1": 0.5}
+
+
+def test_mappo_builds_one_shared_entropy_controller(fake_env):
+    """MAPPO has a single shared actor, so a single controller."""
+    from commons_game_marp.train.algorithms.mappo import MAPPOAlgorithm
+    from commons_game_marp.train.config import MAPPOConfig
+
+    algorithm = MAPPOAlgorithm(MAPPOConfig())
+    algorithm.on_env_ready(fake_env)
+
+    assert algorithm.ent_controller.mode == "adaptive"
+    assert algorithm.ent_controller.target_entropy == pytest.approx(0.6 * math.log(8))
+
+
+def test_mappo_accepts_total_episodes_for_annealing(fake_env):
+    """Trainer.train() calls this behind a hasattr check. MAPPO had no such
+    method, so anneal mode would have silently held at the start value."""
+    from commons_game_marp.train.algorithms.mappo import MAPPOAlgorithm
+    from commons_game_marp.train.config import MAPPOConfig
+
+    config = MAPPOConfig()
+    config.ent_coef_mode = "anneal"
+    config.ent_coef = 0.1
+    config.ent_coef_end = 0.01
+
+    algorithm = MAPPOAlgorithm(config)
+    algorithm.on_env_ready(fake_env)
+    algorithm.set_total_episodes(1000)
+
+    assert algorithm.on_episode_end(-1)["ent_coef"] == pytest.approx(0.1)
+    assert algorithm.on_episode_end(349)["ent_coef"] == pytest.approx(0.0685)
+
+
+def test_mappo_reports_entropy_coefficient(fake_env):
+    from commons_game_marp.train.algorithms.mappo import MAPPOAlgorithm
+    from commons_game_marp.train.config import MAPPOConfig
+
+    algorithm = MAPPOAlgorithm(MAPPOConfig())
+    algorithm.on_env_ready(fake_env)
+
+    metrics = algorithm.on_episode_end(0)
+
+    assert metrics["ent_coef"] == pytest.approx(0.1)
+    assert metrics["target_entropy"] == pytest.approx(0.6 * math.log(8))

@@ -6,7 +6,13 @@ learning_rate: 0.0003
 gamma: 0.99
 gae_lambda: 0.95
 clip_range: 0.2
-ent_coef: 0.01
+ent_coef_mode: adaptive
+ent_coef: 0.1
+ent_coef_end: 0.01
+target_entropy_frac: 0.6
+ent_coef_lr: 0.0003
+ent_coef_min: 0.001
+ent_coef_max: 0.5
 vf_coef: 0.5
 n_steps: 2048
 batch_size: 256

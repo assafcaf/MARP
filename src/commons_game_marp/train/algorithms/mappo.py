@@ -1,6 +1,6 @@
 import os
 from dataclasses import asdict
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -9,6 +9,7 @@ from torch.distributions import Categorical
 
 from .base import Algorithm
 from .ippo import orthogonal_init
+from ..entropy_control import EntropyController
 
 
 class RolloutBuffer:
@@ -169,9 +170,22 @@ class MAPPOAlgorithm(Algorithm):
         self.buffer: RolloutBuffer
         self._last_step: Dict[str, Any] = {}
         self._last_metrics: Dict[str, float] = {}
+        self.ent_controller: Optional[EntropyController] = None
+        self._total_episodes = 0
+        self._current_episode = 0
 
     def uses_external_loop(self) -> bool:
         return True
+
+    def set_total_episodes(self, total: int) -> None:
+        """Set total episodes for the anneal-mode entropy schedule.
+
+        Trainer.train() calls this behind a `hasattr` check. Without it, anneal
+        mode would hold at the start value for the whole run.
+        """
+        self._total_episodes = total
+        if self.ent_controller is not None:
+            self.ent_controller.set_total_episodes(total)
 
     def on_env_ready(self, env) -> None:
         obs_space = env.observation_space["curr_obs"]
@@ -205,6 +219,11 @@ class MAPPOAlgorithm(Algorithm):
             eps=1e-5,  # PPO convention; PyTorch's 1e-8 default is less stable here
         )
         self.buffer = RolloutBuffer(num_agents)
+
+        self.ent_controller = EntropyController(
+            self.config, self.num_actions, self.device
+        )
+        self.ent_controller.set_total_episodes(self._total_episodes)
 
     def _format_local_obs(self, obs: Dict[str, Any], agent_id: str) -> np.ndarray:
         img = obs[agent_id]["curr_obs"]
@@ -293,7 +312,13 @@ class MAPPOAlgorithm(Algorithm):
         if self.buffer.size() > 0:
             self._update()
             self.buffer.clear()
+
+        self._current_episode = episode + 1
         metrics = dict(self._last_metrics)
+        if self.ent_controller is not None:
+            self.ent_controller.set_episode(self._current_episode)
+            metrics["ent_coef"] = self.ent_controller.coefficient()
+            metrics["target_entropy"] = self.ent_controller.target_entropy
         self._last_metrics = {}
         return metrics
 
@@ -362,15 +387,21 @@ class MAPPOAlgorithm(Algorithm):
                 values_pred = values_all.gather(1, mb_agent_idx.unsqueeze(1)).squeeze(1)
                 value_loss = (mb_returns - values_pred).pow(2).mean()
 
-                loss = policy_loss + self.config.vf_coef * value_loss - self.config.ent_coef * entropy
+                current_ent_coef = self.ent_controller.coefficient()
+                loss = (
+                    policy_loss
+                    + self.config.vf_coef * value_loss
+                    - current_ent_coef * entropy
+                )
 
                 self.optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(
-                    list(self.actor.parameters()) + list(self.critic.parameters()),
-                    self.config.max_grad_norm,
-                )
+                # Clipped separately: a joint norm lets a critic-loss spike
+                # scale the actor's gradient down with it.
+                nn.utils.clip_grad_norm_(self.actor.parameters(), self.config.max_grad_norm)
+                nn.utils.clip_grad_norm_(self.critic.parameters(), self.config.max_grad_norm)
                 self.optimizer.step()
+                self.ent_controller.observe_entropy(float(entropy.item()))
 
                 total_loss += float(loss.item())
                 total_policy += float(policy_loss.item())
