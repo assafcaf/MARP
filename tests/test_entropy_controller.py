@@ -199,3 +199,28 @@ def test_shipped_default_responds_within_the_window_a_collapse_takes():
         f"coefficient only reached {controller.coefficient():.4f} from {start:.4f} "
         "after 50 episodes of collapsed entropy -- too slow to catch a collapse"
     )
+
+
+def test_getattr_fallbacks_match_the_declared_config_defaults():
+    """Every duck-typed fallback must equal what IPPOConfig declares.
+
+    The fallbacks are a last resort for a config that predates a field, and a
+    last resort must not quietly select different behaviour from the default.
+    This has now bitten twice -- once when the mode fallback was `anneal` while
+    the default was `adaptive`, and once when the learning-rate fallback stayed
+    at the value proven too slow to catch an entropy collapse. Comparing the
+    two constructions directly retires the whole class rather than the two
+    instances of it.
+    """
+    from commons_game_marp.train.config import IPPOConfig
+
+    declared = EntropyController(IPPOConfig(), 8, CPU)
+    fallback = EntropyController(SimpleNamespace(), 8, CPU)
+
+    assert fallback.mode == declared.mode
+    assert fallback.start == declared.start
+    assert fallback.end == declared.end
+    assert fallback.minimum == declared.minimum
+    assert fallback.maximum == declared.maximum
+    assert fallback.target_entropy == declared.target_entropy
+    assert fallback.coefficient() == declared.coefficient()

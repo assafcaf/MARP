@@ -47,8 +47,8 @@ class EntropyController:
                 f"Unknown ent_coef_mode '{self.mode}'. Available: {list(self.MODES)}"
             )
 
-        self.start = float(getattr(config, "ent_coef", 0.01))
-        self.end = float(getattr(config, "ent_coef_end", self.start))
+        self.start = float(getattr(config, "ent_coef", 0.1))
+        self.end = float(getattr(config, "ent_coef_end", 0.01))
         self.minimum = float(getattr(config, "ent_coef_min", 1e-3))
         self.maximum = float(getattr(config, "ent_coef_max", 0.5))
         frac = float(getattr(config, "target_entropy_frac", 0.6))
@@ -67,7 +67,7 @@ class EntropyController:
                 math.log(initial), dtype=torch.float32, device=device, requires_grad=True
             )
             self._optimizer = torch.optim.Adam(
-                [self._log_ent_coef], lr=float(getattr(config, "ent_coef_lr", 3e-4))
+                [self._log_ent_coef], lr=float(getattr(config, "ent_coef_lr", 3e-3))
             )
 
     def set_total_episodes(self, total: int) -> None:
