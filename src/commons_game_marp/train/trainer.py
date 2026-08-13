@@ -294,6 +294,9 @@ class Trainer:
         self.console.start_episodes(self.config.episodes)
         recent_rewards: list = []
 
+        next_rm_save_episode = max(1, int(rm_cfg.save_every_episodes))
+        next_log_episode = 0
+
         vec = self.env
         num_envs = vec.num_envs
         num_agents = vec.num_agents
@@ -410,7 +413,16 @@ class Trainer:
                     f"warmup complete after episode {episode + 1}"
                     f" -- reward model training starts, buffer holds {len(pref_buffer)} episodes",
                 )
-                if (global_step - last_rm_update_step) >= rm_cfg.update_every_env_steps:
+                # A catch-up loop, not a single fire: the check only runs at
+                # iteration boundaries, and one iteration is num_envs episodes
+                # of env steps. Firing once per boundary would make the update
+                # rate depend on num_envs -- at ep_length 600 and a 1000-step
+                # period, num_envs=1 updated every 1200 env steps while
+                # num_envs=4 updated every 2400. Advancing the marker by one
+                # period at a time keeps the rate at one update per
+                # `update_every_env_steps`, whatever num_envs is.
+                period = max(1, int(rm_cfg.update_every_env_steps))
+                while (global_step - last_rm_update_step) >= period:
                     rm_metrics = rm_trainer.train(
                         pref_buffer,
                         phi_key=rm_cfg.phi,
@@ -418,7 +430,7 @@ class Trainer:
                         batch_pairs=rm_cfg.batch_pairs,
                         train_steps=rm_cfg.train_steps_per_update,
                     )
-                    last_rm_update_step = global_step
+                    last_rm_update_step += period
                     # Later updates are visible in the per-episode stats; the
                     # first one is worth calling out because it is the moment
                     # the predicted rewards stop being random.
@@ -427,10 +439,16 @@ class Trainer:
                         "first reward model update: "
                         + (_format_metrics(rm_metrics) or "no metrics returned"),
                     )
-            if rm_cfg.enabled and (episode + 1) % rm_cfg.save_every_episodes == 0:
+            # Threshold, not an exact modulo: `episode + 1` only ever takes
+            # multiples of num_envs, so `% save_every_episodes` would miss
+            # every period that is not itself a multiple of num_envs (200 at
+            # num_envs=3 fires every 600 episodes, not every 200).
+            if rm_cfg.enabled and (episode + 1) >= next_rm_save_episode:
                 reward_model_path = os.path.join(self.logger.run_dir, "reward_model.pt")
                 reward_model.save(reward_model_path)
                 self.console.info(f"reward model checkpoint saved at episode {episode + 1}")
+                while next_rm_save_episode <= (episode + 1):
+                    next_rm_save_episode += max(1, int(rm_cfg.save_every_episodes))
 
             algo_metrics = self.algorithm.on_episode_end(iteration)
             if algo_metrics is None:
@@ -463,8 +481,14 @@ class Trainer:
                     agent_id: float(pred_by_env_agent[:, i].mean())
                     for i, agent_id in enumerate(agent_ids)
                 }
-            if iteration % self.config.logging.log_interval == 0:
+            # Denominated in episodes, as it was before parallel envs: an
+            # iteration-based modulo would silently multiply the interval by
+            # num_envs. One record per iteration is the ceiling on resolution,
+            # so a log_interval below num_envs simply logs every iteration.
+            if (episode + 1) > next_log_episode:
                 self.logger.log_episode(payload)
+                while next_log_episode <= episode:
+                    next_log_episode += max(1, int(self.config.logging.log_interval))
             # Log detailed agent episode data to separate files, environment 0.
             if agent_episode_details is not None:
                 for i, agent_id in enumerate(agent_ids):

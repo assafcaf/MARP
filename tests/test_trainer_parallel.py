@@ -142,6 +142,96 @@ def test_preference_buffer_gets_one_record_per_environment(tmp_path):
     assert len(seen) == 4
 
 
+def _count_reward_model_updates(tmp_path, num_envs, episodes, every_steps):
+    from commons_game_marp.reward_model.reward_trainer import RewardModelTrainer
+
+    calls = []
+    original = RewardModelTrainer.train
+
+    def spy(self, *args, **kwargs):
+        calls.append(1)
+        return original(self, *args, **kwargs)
+
+    RewardModelTrainer.train = spy
+    try:
+        config = make_config(
+            tmp_path,
+            RandomConfig(device="cpu"),
+            num_envs=num_envs,
+            episodes=episodes,
+            reward_model=True,
+        )
+        config.reward_model.update_every_env_steps = every_steps
+        Trainer(config).train()
+    finally:
+        RewardModelTrainer.train = original
+    return len(calls)
+
+
+def test_reward_model_update_rate_does_not_depend_on_num_envs(tmp_path):
+    """The period is denominated in env steps, so the same experience must buy
+    the same number of updates however many environments produced it.
+
+    The check only runs at iteration boundaries, and an iteration is num_envs
+    episodes wide -- firing once per boundary made num_envs=4 update half as
+    often per env step as num_envs=1.
+    """
+    # 8 episodes x 5 steps = 40 env steps either way, period 10 -> 4 updates.
+    serial = _count_reward_model_updates(
+        tmp_path / "serial", num_envs=1, episodes=8, every_steps=10
+    )
+    parallel = _count_reward_model_updates(
+        tmp_path / "parallel", num_envs=4, episodes=8, every_steps=10
+    )
+
+    assert serial == parallel == 4
+
+
+def test_reward_model_checkpoints_at_the_configured_episode_period(tmp_path):
+    """`episode + 1` only takes multiples of num_envs, so an exact modulo
+    against save_every_episodes misses every period that is not itself a
+    multiple of num_envs."""
+    from commons_game_marp.reward_model.reward_model import RewardModel
+
+    saves = []
+    original = RewardModel.save
+
+    def spy(self, path):
+        saves.append(path)
+        return original(self, path)
+
+    RewardModel.save = spy
+    try:
+        config = make_config(
+            tmp_path,
+            RandomConfig(device="cpu"),
+            num_envs=2,
+            episodes=12,
+            reward_model=True,
+        )
+        config.reward_model.save_every_episodes = 3
+        Trainer(config).train()
+    finally:
+        RewardModel.save = original
+
+    # 12 episodes at a 3-episode period is 4 checkpoints, plus the final
+    # reward_model_last.pt the run always writes.
+    periodic = [p for p in saves if p.endswith("reward_model.pt")]
+    assert len(periodic) == 4
+
+
+@pytest.mark.parametrize("num_envs", [1, 2])
+def test_log_interval_is_denominated_in_episodes(tmp_path, num_envs):
+    """An iteration-based modulo would multiply the interval by num_envs."""
+    config = make_config(
+        tmp_path, RandomConfig(device="cpu"), num_envs=num_envs, episodes=6
+    )
+    config.logging.log_interval = 2
+    Trainer(config).train()
+
+    assert len(read_episodes(tmp_path / "run")) == 3
+
+
 def test_agent_detail_logs_cover_env_zero_only(tmp_path):
     """One episode's detail row per agent per iteration, not num_envs of them."""
     config = make_config(tmp_path, RandomConfig(device="cpu"), num_envs=2, episodes=4)
