@@ -112,10 +112,20 @@ class RewardModelConfig:
     max_episodes_in_buffer: int = 5000
     device: str = "auto"
     save_every_episodes: int = 200
+    # Optimisation
+    weight_decay: float = 1e-4  # Matches the reference MARP predictor's Adam
+    max_grad_norm: Optional[float] = 1.0  # None or 0 disables clipping
+    delta_temperature: float = 1.0  # softmax(delta / (std + tau)) pair weighting
+    tie_tolerance: float = 0.0  # |phi_i - phi_j| <= this counts as a tie (mu=0.5)
     # Performance optimization options
     use_amp: bool = True  # Use mixed precision (FP16) for faster training
     chunk_size: int = 512  # Max steps per forward pass chunk (memory control)
+    grad_checkpoint: bool = False  # Recompute chunk activations in backward
     max_steps_per_sequence: Optional[int] = 256  # Temporal subsampling limit (None = no limit)
+    # Cap steps kept per agent at insertion time (None = keep the full episode).
+    # The buffer's resident size is the binding constraint at the default
+    # buffer length; see PreferenceBuffer's docstring for the arithmetic.
+    store_max_steps_per_agent: Optional[int] = None
 
 
 @dataclass

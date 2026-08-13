@@ -212,9 +212,18 @@ device: auto
 save_every_episodes: 200
 ```
 
-`use_amp`, `chunk_size`, and `max_steps_per_sequence` take their schema defaults
-(`true`, `512`, `256`) and are overridable the same way, e.g.
+The optimisation and performance keys take their schema defaults (see the two
+tables below) and are overridable the same way, e.g.
 `reward_model.chunk_size=256`.
+
+### Optimisation options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `weight_decay` | `1e-4` | Adam weight decay, matching the reference MARP predictor. |
+| `max_grad_norm` | `1.0` | Gradient-norm clipping. A sequence score sums hundreds of unbounded per-step rewards, so its gradients are heavy-tailed. Set to `null` or `0` to disable. Under AMP the gradients are unscaled before clipping, so the threshold is in true units. |
+| `delta_temperature` | `1.0` | Temperature `tau` in the preference-magnitude weighting `softmax(delta / (std(delta) + tau))`. `1.0` reproduces the reference implementation. Small values make the weighting collapse onto the largest-delta pairs — watch `reward_model/effective_pairs` if you lower it. |
+| `tie_tolerance` | `0.0` | `abs(phi_i - phi_j) <= tie_tolerance` counts as a tie and is labelled `mu = 0.5` (no preference) instead of being forced to one side. |
 
 ### Available phi functions
 
@@ -237,13 +246,26 @@ The reward model training supports several performance optimizations for memory-
 | Option | Default | Description |
 |--------|---------|-------------|
 | `use_amp` | `true` | Use mixed precision (FP16) training. Halves GPU memory usage and speeds up training on compatible GPUs. Automatically disabled on CPU. |
-| `chunk_size` | `512` | Maximum number of steps per forward pass chunk. Larger values are faster but use more memory. Reduce if encountering OOM errors. |
+| `chunk_size` | `512` | Maximum number of steps per forward pass chunk. Larger values are faster but use more memory. Reduce if encountering OOM errors. Note that without `grad_checkpoint` this bounds *inference* memory only — see below. |
+| `grad_checkpoint` | `false` | Recompute each chunk's activations during backward instead of keeping them. This is what makes `chunk_size` bound *training* memory: without it every chunk holds its activation graph until `.backward()`, so peak memory tracks the full sequence no matter how small the chunks are. Measured on a 64x256-step `input_aggregation` batch: **1.55 GB peak → 0.11 GB**, at ~1.7x the step time. |
 | `max_steps_per_sequence` | `256` | Temporal subsampling limit. Limits the number of steps per trajectory using uniform spacing. Set to `null` to disable subsampling (process all steps). |
+| `store_max_steps_per_agent` | `null` | Subsample each agent's trajectory when it is *inserted* into the preference buffer, rather than keeping it at full resolution and subsampling at every training step. This is the knob that bounds host RAM, and `max_steps_per_sequence` is not — see below. |
 
-**Memory usage tips:**
+**GPU memory tips:**
 - For 8GB GPU: Use defaults (`max_steps_per_sequence: 256`, `chunk_size: 512`, `use_amp: true`)
-- For 4GB GPU: Try `max_steps_per_sequence: 128`, `chunk_size: 256`
+- For 4GB GPU: Try `max_steps_per_sequence: 128`, `chunk_size: 256`, `grad_checkpoint: true`
 - For larger GPUs: Increase `max_steps_per_sequence` to `512` or `null` for full precision
+
+**Host RAM — the preference buffer:** the buffer holds every step of every
+agent for `max_episodes_in_buffer` episodes. At the default 5000 episodes with
+600-step episodes, 5 agents and 15x15x3 frames that is 15M frames, i.e. **~10 GB**
+(observations are stored as `uint8`; they were previously widened to `float32`
+on the way in, which made the same buffer ~40 GB and OOMed long before it
+filled). `max_steps_per_sequence` does not help here — it only trims what is
+read out at training time. To bound residency, either lower
+`max_episodes_in_buffer` or set `store_max_steps_per_agent` (e.g. `256`, which
+cuts the above to ~4 GB and matches what training would have subsampled to
+anyway).
 
 **Mode comparison:**
 - `input_aggregation`: Aggregates trajectories from ALL agents (higher memory, captures global patterns)
@@ -252,7 +274,13 @@ The reward model training supports several performance optimizations for memory-
 Logging:
 - `reward_pred_*` tracks predicted rewards when RM is enabled.
 - `reward_env_*` tracks environment rewards.
-- `reward_model/*` in TensorBoard shows RM loss/accuracy/correlation.
+- `reward_model/*` in TensorBoard shows RM loss/accuracy/correlation:
+  - `loss`, `pref_accuracy` — accuracy is computed over *decisive* pairs only; tied pairs carry no ground truth to be right about.
+  - `tie_fraction` — share of pairs with `phi_i == phi_j`. Near 1.0 means the oracle cannot separate the current episodes at all (typical during warmup, when every episode scores `efficiency = 0`) and the update is mostly a no-op.
+  - `effective_pairs` — `1 / sum(w^2)` for the magnitude weights: how many of the `batch_pairs` the weighted loss actually used. Should sit close to `batch_pairs`; a low value means `delta_temperature` is too small for the current delta spread.
+  - `grad_norm` — mean pre-clip gradient norm over steps with finite gradients.
+  - `grad_overflow_rate` — share of steps the AMP loss scaler skipped for overflow. A few at the start of a run is the scaler finding its scale; a persistently high value means AMP is hurting and `use_amp: false` is worth trying.
+  - `score_phi_corr` — Pearson correlation between episode scores and phi, reported only once at least 4 distinct episodes are in the batch (a 2-point correlation is +-1 by construction).
 
 Checkpoints:
 - All algorithms: `logs/<run>/model_last.pt`, `logs/<run>/reward_model_last.pt`

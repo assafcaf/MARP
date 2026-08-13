@@ -87,19 +87,27 @@ class Trainer:
             total_episodes=self.config.episodes,
         )
 
-    def _format_reward_obs(self, obs: dict, agent_id: str) -> np.ndarray:
-        """Format an observation for the reward model.
+    def _reward_obs_scale(self) -> float:
+        """Scale the reward model applies to stored observations.
 
         Normalization follows the selected algorithm's setting so the reward
         model sees inputs on the same scale as the policy does. Every algorithm
         node declares `normalize_obs`, including `random`.
         """
-        img = obs[agent_id]["curr_obs"]
         algorithm_cfg = getattr(self.config, "algorithm", None)
         normalize = getattr(algorithm_cfg, "normalize_obs", False)
-        if normalize:
-            return (img / 255.0).astype(np.float32)
-        return img.astype(np.float32)
+        return 1.0 / 255.0 if normalize else 1.0
+
+    def _format_reward_obs(self, obs: dict, agent_id: str) -> np.ndarray:
+        """Format an observation for the reward model.
+
+        Returns the frame in its native `uint8` dtype. Scaling happens inside
+        `RewardModel.forward`, on device, via `obs_scale` -- so the preference
+        buffer holds a quarter of the bytes a float32 copy would need, and the
+        same saving applies to every host-to-device transfer. The effective
+        input scale is unchanged: `_reward_obs_scale() * frame`.
+        """
+        return np.ascontiguousarray(obs[agent_id]["curr_obs"])
 
     def train(self) -> None:
         # Set total episodes for algorithms that support entropy annealing
@@ -116,18 +124,28 @@ class Trainer:
         if rm_cfg.enabled:
             obs_shape = self.env.observation_space["curr_obs"].shape
             num_actions = int(self.env.action_space.n)
-            reward_model = RewardModel(obs_shape=obs_shape, num_actions=num_actions)
+            reward_model = RewardModel(
+                obs_shape=obs_shape,
+                num_actions=num_actions,
+                obs_scale=self._reward_obs_scale(),
+            )
             rm_trainer = RewardModelTrainer(
                 reward_model,
                 lr=rm_cfg.lr,
                 device=rm_cfg.device,
                 use_amp=rm_cfg.use_amp,
                 chunk_size=rm_cfg.chunk_size,
+                weight_decay=rm_cfg.weight_decay,
+                max_grad_norm=rm_cfg.max_grad_norm,
+                delta_temperature=rm_cfg.delta_temperature,
+                grad_checkpoint=rm_cfg.grad_checkpoint,
+                tie_tolerance=rm_cfg.tie_tolerance,
             )
             reward_model = rm_trainer.reward_model
             pref_buffer = PreferenceBuffer(
                 rm_cfg.max_episodes_in_buffer,
                 max_steps_per_sequence=rm_cfg.max_steps_per_sequence,
+                store_max_steps_per_agent=rm_cfg.store_max_steps_per_agent,
             )
 
         for episode in range(self.config.episodes):
@@ -141,18 +159,30 @@ class Trainer:
             video_recorder.start(episode)
             for step in range(self.config.env.ep_length):
                 actions = self.algorithm.act(obs, step)
-                step_obs_imgs = {}
+                step_agent_ids = []
+                step_obs_imgs = []
+                step_actions = []
                 if rm_cfg.enabled:
                     for agent_id in obs.keys():
                         obs_img = self._format_reward_obs(obs, agent_id)
-                        step_obs_imgs[agent_id] = obs_img
+                        step_agent_ids.append(agent_id)
+                        step_obs_imgs.append(obs_img)
+                        step_actions.append(actions[agent_id])
                         episode_agent_trajs[agent_id].append((obs_img, actions[agent_id]))
                 next_obs, rewards, dones, infos = self.env.step(actions)
                 if rm_cfg.enabled:
-                    pred_rewards = {
-                        agent_id: reward_model.predict(step_obs_imgs[agent_id], actions[agent_id])
-                        for agent_id in obs.keys()
-                    }
+                    # One forward pass and one device sync for the whole step,
+                    # instead of one per agent.
+                    if step_obs_imgs:
+                        predicted = reward_model.predict_batch(
+                            np.stack(step_obs_imgs, axis=0), step_actions
+                        )
+                        pred_rewards = {
+                            agent_id: float(value)
+                            for agent_id, value in zip(step_agent_ids, predicted)
+                        }
+                    else:
+                        pred_rewards = {}
                     self.algorithm.observe(obs, actions, pred_rewards, next_obs, dones, infos, step)
                     for agent_id, reward in pred_rewards.items():
                         episode_pred_rewards[agent_id] += reward

@@ -12,11 +12,25 @@ class _ConfigStub:
         self.algorithm = algorithm
 
 
-def _format(algorithm) -> np.ndarray:
+def _stub(algorithm) -> Trainer:
     stub = object.__new__(Trainer)
     stub.config = _ConfigStub(algorithm)
+    return stub
+
+
+def _format(algorithm) -> np.ndarray:
     obs = {"agent-0": {"curr_obs": np.full((3, 3, 3), 255, dtype=np.uint8)}}
-    return Trainer._format_reward_obs(stub, obs, "agent-0")
+    return Trainer._format_reward_obs(_stub(algorithm), obs, "agent-0")
+
+
+def _effective_max(algorithm) -> float:
+    """The scale the model actually sees: stored frame x `obs_scale`.
+
+    Frames are stored raw (uint8) and scaled inside `RewardModel.forward`, so
+    the invariant this module guards has to be checked on the product, not on
+    the stored array alone.
+    """
+    return float(_format(algorithm).max()) * Trainer._reward_obs_scale(_stub(algorithm))
 
 
 @pytest.mark.parametrize("cls", [DQNConfig, IPPOConfig, MAPPOConfig, RandomConfig])
@@ -24,14 +38,21 @@ def test_normalization_follows_the_selected_algorithm(cls):
     algorithm = cls()
 
     algorithm.normalize_obs = True
-    assert _format(algorithm).max() == pytest.approx(1.0)
+    assert _effective_max(algorithm) == pytest.approx(1.0)
 
     algorithm.normalize_obs = False
-    assert _format(algorithm).max() == pytest.approx(255.0)
+    assert _effective_max(algorithm) == pytest.approx(255.0)
 
 
 def test_random_policy_normalizes_by_default():
     """Regression guard: `random` has no hyperparameters of its own and used to
     fall through to the dqn section. Its default must stay True so reward-model
     inputs match the data the model was trained on."""
-    assert _format(RandomConfig()).max() == pytest.approx(1.0)
+    assert _effective_max(RandomConfig()) == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize("cls", [DQNConfig, IPPOConfig, MAPPOConfig, RandomConfig])
+def test_stored_observations_stay_uint8(cls):
+    """Buffer residency is the binding memory constraint, so the frame handed
+    to the preference buffer must not be widened to float32 on the way in."""
+    assert _format(cls()).dtype == np.uint8
