@@ -8,7 +8,7 @@ from omegaconf import MISSING
 class EnvConfig:
     map_type: str = "small"
     num_agents: int = 1
-    agent_view_range: int = 5
+    agent_view_range: int = 7
     ep_length: int = 600
     render: bool = False
     spawn_speed: str = "slow"

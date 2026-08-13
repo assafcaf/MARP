@@ -88,3 +88,20 @@ def test_config_snapshot_round_trips(tmp_path):
     assert OmegaConf.to_container(reloaded) == OmegaConf.to_container(
         OmegaConf.structured(config)
     )
+
+
+@pytest.mark.parametrize("env_group", ["medium", "small"])
+def test_view_range_matches_the_reference_implementation(env_group):
+    """DanfoaTestSOT runs agent_view_range: 7 (src/configs/prm.yaml). The
+    observation is (2*view+1, 2*view+1, 3), so this is 15x15x3 rather than
+    the 11x11x3 the earlier runs used."""
+    config = _compose(f"env={env_group}")
+    assert config.env.agent_view_range == 7
+
+
+def test_env_config_dataclass_default_view_range():
+    """The dataclass default must agree with the YAML: a programmatic
+    Trainer(TrainerConfig()) bypasses Hydra entirely."""
+    from commons_game_marp.train.config import EnvConfig
+
+    assert EnvConfig().agent_view_range == 7
