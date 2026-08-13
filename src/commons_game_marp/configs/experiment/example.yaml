@@ -154,9 +154,10 @@ algorithm:
   target_entropy_frac: 0.6   # adaptive only
   # adaptive only. Units are per minibatch, not per episode: observe_entropy
   # fires once per minibatch, which at this file's rollout settings
-  # (n_steps=512, batch_size=128, update_epochs=2, ep_length=600) is about 10
-  # calls per episode per agent -- not the thousands per episode the SAC
-  # convention this value is borrowed from assumes.
+  # (n_steps=null so 600 per env, batch_size=128, update_epochs=2,
+  # ep_length=600) is about 10 calls per episode per agent -- not the thousands
+  # per episode the SAC convention this value is borrowed from assumes. Note
+  # this count scales with num_envs, since the batch does.
   ent_coef_lr: 0.003         # adaptive only
   ent_coef_min: 0.001        # adaptive only
   ent_coef_max: 0.5          # adaptive only
