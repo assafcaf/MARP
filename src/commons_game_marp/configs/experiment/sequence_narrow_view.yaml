@@ -10,3 +10,7 @@
 defaults:
   - sequence_narrow_vs_input_agg
   - override /reward_model: narrow_view
+episodes: 5000
+seed: 0
+reward_model:
+  phi: efficiency

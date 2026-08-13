@@ -19,8 +19,9 @@ def _stub(algorithm) -> Trainer:
 
 
 def _format(algorithm) -> np.ndarray:
-    obs = {"agent-0": {"curr_obs": np.full((3, 3, 3), 255, dtype=np.uint8)}}
-    return Trainer._format_reward_obs(_stub(algorithm), obs, "agent-0")
+    # One flat row per (env, agent); row 0 is env 0's first agent.
+    rows = np.full((1, 3, 3, 3), 255, dtype=np.uint8)
+    return Trainer._format_reward_obs(_stub(algorithm), rows, 0)
 
 
 def _effective_max(algorithm) -> float:
@@ -58,7 +59,7 @@ def test_stored_observations_stay_uint8(cls):
     assert _format(cls()).dtype == np.uint8
 
 
-def test_build_env_returns_the_bare_env_at_one_frame():
+def test_make_single_env_returns_the_bare_env_at_one_frame():
     from commons_game_marp.env.commons_env import HarvestCommonsEnv
     from commons_game_marp.train.config import TrainerConfig
 
@@ -69,13 +70,13 @@ def test_build_env_returns_the_bare_env_at_one_frame():
 
     stub = object.__new__(Trainer)
     stub.config = config
-    env = Trainer._build_env(stub)
+    env = Trainer._make_single_env(stub)
 
     assert isinstance(env, HarvestCommonsEnv)
 
 
 @pytest.mark.parametrize("num_frames", [0, -1])
-def test_build_env_rejects_non_positive_num_frames(num_frames):
+def test_make_single_env_rejects_non_positive_num_frames(num_frames):
     """A typo'd 0 or -1 used to fall through the getattr default and return
     the bare env with no complaint. num_frames is a declared dataclass field
     now, so read it directly and reject anything below 1."""
@@ -90,10 +91,10 @@ def test_build_env_rejects_non_positive_num_frames(num_frames):
     stub.config = config
 
     with pytest.raises(ValueError, match="num_frames"):
-        Trainer._build_env(stub)
+        Trainer._make_single_env(stub)
 
 
-def test_build_env_wraps_and_widens_the_observation_space_above_one_frame():
+def test_make_single_env_wraps_and_widens_the_observation_space_above_one_frame():
     from commons_game_marp.env.frame_stack import FrameStackEnv
     from commons_game_marp.train.config import TrainerConfig
 
@@ -104,12 +105,35 @@ def test_build_env_wraps_and_widens_the_observation_space_above_one_frame():
 
     stub = object.__new__(Trainer)
     stub.config = config
-    env = Trainer._build_env(stub)
+    env = Trainer._make_single_env(stub)
 
     assert isinstance(env, FrameStackEnv)
     height, width, channels = env.observation_space["curr_obs"].shape
     assert (height, width) == (15, 15)
     assert channels == 6
+
+
+def test_build_env_wraps_num_envs_copies_of_the_configured_env():
+    """`_build_env` is now the vec layer; `_make_single_env` is the copy."""
+    from commons_game_marp.env.frame_stack import FrameStackEnv
+    from commons_game_marp.env.vec_env import VecCommonsEnv
+    from commons_game_marp.train.config import TrainerConfig
+
+    config = TrainerConfig()
+    config.env.num_frames = 2
+    config.env.num_agents = 2
+    config.env.map_type = "small"
+    config.env.num_envs = 3
+
+    stub = object.__new__(Trainer)
+    stub.config = config
+    env = Trainer._build_env(stub)
+
+    assert isinstance(env, VecCommonsEnv)
+    assert env.num_envs == 3
+    assert env.num_rows == 6
+    # Each copy is wrapped exactly as a single env would be.
+    assert all(isinstance(e, FrameStackEnv) for e in env.envs)
 
 
 class _WarnCapture:

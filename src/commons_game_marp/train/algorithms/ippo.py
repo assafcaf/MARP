@@ -7,7 +7,9 @@ import torch
 from torch import nn
 from torch.distributions import Categorical
 
+from ...env.vec_env import agents_to_rows, rows_to_agents
 from .base import Algorithm
+from .gae import compute_gae
 from ..entropy_control import EntropyController
 
 
@@ -38,30 +40,38 @@ def orthogonal_init(
 
 
 class SingleAgentBuffer:
-    """Rollout buffer for a single agent."""
+    """Rollout buffer for one agent across `num_envs` parallel environments.
 
-    def __init__(self) -> None:
+    Every entry carries a leading env axis, so the stored arrays are (T,
+    num_envs). `size()` reports T -- per-env timesteps -- which is what
+    `n_steps` counts, following SB3's convention; the update batch is
+    therefore n_steps * num_envs.
+    """
+
+    def __init__(self, num_envs: int = 1) -> None:
+        self.num_envs = num_envs
         self.clear()
 
     def clear(self) -> None:
         self.obs: List[np.ndarray] = []
-        self.actions: List[int] = []
-        self.logprobs: List[float] = []
-        self.rewards: List[float] = []
-        self.dones: List[bool] = []
-        self.values: List[float] = []
-        self.next_values: List[float] = []
+        self.actions: List[np.ndarray] = []
+        self.logprobs: List[np.ndarray] = []
+        self.rewards: List[np.ndarray] = []
+        self.dones: List[np.ndarray] = []
+        self.values: List[np.ndarray] = []
+        self.next_values: List[np.ndarray] = []
 
     def add_step(
         self,
         obs: np.ndarray,
-        action: int,
-        logprob: float,
-        reward: float,
-        done: bool,
-        value: float,
-        next_value: float,
+        action: np.ndarray,
+        logprob: np.ndarray,
+        reward: np.ndarray,
+        done: np.ndarray,
+        value: np.ndarray,
+        next_value: np.ndarray,
     ) -> None:
+        """Record one timestep. `obs` is (num_envs, ...); the rest (num_envs,)."""
         self.obs.append(obs)
         self.actions.append(action)
         self.logprobs.append(logprob)
@@ -71,25 +81,20 @@ class SingleAgentBuffer:
         self.next_values.append(next_value)
 
     def size(self) -> int:
+        """Timesteps per environment, not rows."""
         return len(self.rewards)
 
     def compute_advantages(
         self, gamma: float, gae_lambda: float
     ) -> Tuple[np.ndarray, np.ndarray]:
-        rewards = np.array(self.rewards, dtype=np.float32)
-        dones = np.array(self.dones, dtype=np.float32)
-        values = np.array(self.values, dtype=np.float32)
-        next_values = np.array(self.next_values, dtype=np.float32)
-        T = len(rewards)
-        advantages = np.zeros(T, dtype=np.float32)
-        last_adv = 0.0
-        for t in reversed(range(T)):
-            mask = 1.0 - dones[t]
-            delta = rewards[t] + gamma * next_values[t] * mask - values[t]
-            last_adv = delta + gamma * gae_lambda * mask * last_adv
-            advantages[t] = last_adv
-        returns = advantages + values
-        return advantages, returns
+        return compute_gae(
+            rewards=np.stack(self.rewards, axis=0),
+            dones=np.stack(self.dones, axis=0),
+            values=np.stack(self.values, axis=0),
+            next_values=np.stack(self.next_values, axis=0),
+            gamma=gamma,
+            gae_lambda=gae_lambda,
+        )
 
 
 class MLPActor(nn.Module):
@@ -203,6 +208,8 @@ class IPPOAlgorithm(Algorithm):
     def __init__(self, config: Any) -> None:
         super().__init__(config)
         self.agent_ids: List[str] = []
+        self.num_envs = 1
+        self.num_agents = 0
         self.num_actions = 0
         self.device = torch.device("cpu")
         self.obs_shape: Tuple[int, ...] = ()
@@ -235,7 +242,9 @@ class IPPOAlgorithm(Algorithm):
         obs_space = env.observation_space["curr_obs"]
         self.obs_shape = obs_space.shape
         self.num_actions = int(env.action_space.n)
-        self.agent_ids = list(env.agents.keys())
+        self.agent_ids = list(env.agent_ids)
+        self.num_envs = int(env.num_envs)
+        self.num_agents = len(self.agent_ids)
 
         device = self.config.device
         if device == "auto":
@@ -267,29 +276,29 @@ class IPPOAlgorithm(Algorithm):
             self.actors[agent_id] = actor
             self.critics[agent_id] = critic
             self.optimizers[agent_id] = optimizer
-            self.buffers[agent_id] = SingleAgentBuffer()
+            self.buffers[agent_id] = SingleAgentBuffer(self.num_envs)
             self.ent_controllers[agent_id] = EntropyController(
                 self.config, self.num_actions, self.device
             )
             self.ent_controllers[agent_id].set_total_episodes(self._total_episodes)
 
-    def _format_obs(self, obs: Dict[str, Any], agent_id: str) -> np.ndarray:
-        img = obs[agent_id]["curr_obs"]
+    def _format_obs(self, obs_batch: np.ndarray) -> np.ndarray:
+        """One agent's (num_envs, ...) uint8 rows -> the policy's input dtype."""
+        img = obs_batch.astype(np.float32)
         if self.config.normalize_obs:
-            img = (img / 255.0).astype(np.float32)
-        else:
-            img = img.astype(np.float32)
+            img = img / 255.0
         if self.config.flatten_obs:
-            return img.reshape(-1)
+            return img.reshape(obs_batch.shape[0], -1)
         return img
 
-    def act(self, observations: Dict[str, Any], step: int) -> Dict[str, int]:
-        actions = {}
+    def act(self, observations: np.ndarray, step: int) -> np.ndarray:
+        per_agent = rows_to_agents(observations, self.num_envs, self.agent_ids)
+        actions: Dict[str, np.ndarray] = {}
         self._last_step = {}
 
         for agent_id in self.agent_ids:
-            obs = self._format_obs(observations, agent_id)
-            obs_tensor = torch.from_numpy(obs).float().unsqueeze(0).to(self.device)
+            obs = self._format_obs(per_agent[agent_id])
+            obs_tensor = torch.from_numpy(obs).float().to(self.device)
 
             with torch.no_grad():
                 logits = self.actors[agent_id](obs_tensor)
@@ -298,61 +307,69 @@ class IPPOAlgorithm(Algorithm):
                 logprob = dist.log_prob(action)
                 value = self.critics[agent_id](obs_tensor)
 
-            action_int = int(action.item())
-            actions[agent_id] = action_int
+            actions_np = action.cpu().numpy().astype(np.int64)
+            actions[agent_id] = actions_np
 
             self._last_step[agent_id] = {
                 "obs": obs,
-                "action": action_int,
-                "logprob": float(logprob.item()),
-                "value": float(value.item()),
+                "action": actions_np,
+                "logprob": logprob.cpu().numpy().astype(np.float32),
+                "value": value.cpu().numpy().astype(np.float32),
             }
 
-        return actions
+        return agents_to_rows(actions, self.num_envs, self.agent_ids)
 
     def observe(
         self,
-        observations: Dict[str, Any],
-        actions: Dict[str, int],
-        rewards: Dict[str, float],
-        next_observations: Dict[str, Any],
-        dones: Dict[str, bool],
-        infos: Dict[str, Any],
+        observations: np.ndarray,
+        actions: np.ndarray,
+        rewards: np.ndarray,
+        next_observations: np.ndarray,
+        dones: np.ndarray,
+        infos: List[Dict[str, Any]],
         step: int,
     ) -> None:
         if not self._last_step:
             return
 
-        done_all = bool(dones.get("__all__", False))
+        next_by_agent = rows_to_agents(next_observations, self.num_envs, self.agent_ids)
+        rew_by_agent = rows_to_agents(rewards, self.num_envs, self.agent_ids)
+        done_by_agent = rows_to_agents(dones, self.num_envs, self.agent_ids)
 
         for agent_id in self.agent_ids:
             if agent_id not in self._last_step:
                 continue
 
             last = self._last_step[agent_id]
-            agent_done = bool(dones.get(agent_id, False)) or done_all
 
             # Compute next value
-            next_obs = self._format_obs(next_observations, agent_id)
-            next_obs_tensor = torch.from_numpy(next_obs).float().unsqueeze(0).to(self.device)
+            next_obs = self._format_obs(next_by_agent[agent_id])
+            next_obs_tensor = torch.from_numpy(next_obs).float().to(self.device)
             with torch.no_grad():
-                next_value = float(self.critics[agent_id](next_obs_tensor).item())
+                next_value = (
+                    self.critics[agent_id](next_obs_tensor)
+                    .cpu()
+                    .numpy()
+                    .astype(np.float32)
+                )
 
             self.buffers[agent_id].add_step(
                 obs=last["obs"],
                 action=last["action"],
                 logprob=last["logprob"],
-                reward=float(rewards[agent_id]),
-                done=agent_done,
+                reward=np.asarray(rew_by_agent[agent_id], dtype=np.float32),
+                done=np.asarray(done_by_agent[agent_id], dtype=np.float32),
                 value=last["value"],
                 next_value=next_value,
             )
 
         self._last_step = {}
 
-        # Check if any buffer is ready for update
+        # The `or done_all` trigger the dict interface carried is gone: episodes
+        # are lockstep and fixed-length, and `on_episode_end` already flushes
+        # whatever is left in the buffers at the boundary.
         min_buffer_size = min(buf.size() for buf in self.buffers.values())
-        if min_buffer_size >= self.config.n_steps or done_all:
+        if min_buffer_size >= self.config.n_steps:
             self._update_all()
 
     def on_episode_end(self, episode: int) -> Dict[str, Any]:
@@ -427,10 +444,17 @@ class IPPOAlgorithm(Algorithm):
             gamma=self.config.gamma, gae_lambda=self.config.gae_lambda
         )
 
-        obs = np.stack(buffer.obs, axis=0)
-        actions = np.array(buffer.actions, dtype=np.int64)
-        old_logprobs = np.array(buffer.logprobs, dtype=np.float32)
-        old_values = np.array(buffer.values, dtype=np.float32)
+        # (T, num_envs, ...) -> (T * num_envs, ...). Advantages were computed
+        # per column first, so no gradient path crosses an environment.
+        stacked_obs = np.stack(buffer.obs, axis=0)
+        T, E = stacked_obs.shape[0], stacked_obs.shape[1]
+        total = T * E
+        obs = stacked_obs.reshape(total, *stacked_obs.shape[2:])
+        actions = np.stack(buffer.actions, axis=0).reshape(total).astype(np.int64)
+        old_logprobs = np.stack(buffer.logprobs, axis=0).reshape(total).astype(np.float32)
+        old_values = np.stack(buffer.values, axis=0).reshape(total).astype(np.float32)
+        advantages = advantages.reshape(total)
+        returns = returns.reshape(total)
 
         # Normalize advantages
         adv_mean = advantages.mean()
@@ -444,8 +468,7 @@ class IPPOAlgorithm(Algorithm):
         advantages_tensor = torch.from_numpy(advantages).float().to(self.device)
         returns_tensor = torch.from_numpy(returns).float().to(self.device)
 
-        T = len(buffer.obs)
-        batch_size = min(int(self.config.batch_size), T)
+        batch_size = min(int(self.config.batch_size), total)
 
         controller = self.ent_controllers[agent_id]
         vf_clip = getattr(self.config, "vf_clip", None)
@@ -457,8 +480,8 @@ class IPPOAlgorithm(Algorithm):
         total_batches = 0
 
         for _ in range(int(self.config.update_epochs)):
-            indices = np.random.permutation(T)
-            for start in range(0, T, batch_size):
+            indices = np.random.permutation(total)
+            for start in range(0, total, batch_size):
                 end = start + batch_size
                 mb_idx = indices[start:end]
                 mb_obs = obs_tensor[mb_idx]

@@ -5,10 +5,11 @@ from omegaconf import OmegaConf
 
 from ..env.commons_env import HarvestCommonsEnv, MAP
 from ..env.frame_stack import FrameStackEnv
+from ..env.vec_env import VecCommonsEnv
 from ..reward_model.preference_buffer import EpisodeRecord, PreferenceBuffer
 from ..reward_model.reward_model import RewardModel
 from ..reward_model.reward_trainer import RewardModelTrainer
-from .config import TrainerConfig
+from .config import TrainerConfig, resolve_iterations
 from .console import TrainingConsole, format_metrics as _format_metrics
 from .logging_utils import ResultLogger
 from .registry import build_algorithm
@@ -16,6 +17,16 @@ from .run_info import write_run_info
 from .run_paths import run_path
 from .video_utils import VideoRecorder
 from .metrics import compute_agent_step_metrics
+
+
+def _average_social_metrics(per_env: list) -> dict:
+    """Mean of each social metric across the environments of one iteration."""
+    if not per_env:
+        return {}
+    return {
+        key: float(np.mean([metrics[key] for metrics in per_env]))
+        for key in per_env[0]
+    }
 
 
 class Trainer:
@@ -38,6 +49,11 @@ class Trainer:
         self._seed_rngs(self.config.seed)
         self.console = TrainingConsole.from_config(config.logging)
         self.console.section("Setup")
+        # Resolved before any environment is constructed, so a bad
+        # episodes/num_envs pair fails immediately rather than after setup.
+        self.iterations = resolve_iterations(
+            self.config.episodes, int(self.config.env.num_envs)
+        )
         self.env = self._build_env()
         self.algorithm = build_algorithm(config.algorithm)
         self.algorithm.on_env_ready(self.env)
@@ -62,6 +78,11 @@ class Trainer:
             f"environment    : map={env_cfg.map_type} agents={env_cfg.num_agents}"
             f" view={env_cfg.agent_view_range}{stack} spawn={env_cfg.spawn_speed}"
         )
+        if env_cfg.num_envs > 1:
+            self.console.info(
+                f"parallel envs  : {env_cfg.num_envs}"
+                f" ({self.iterations} iterations x {env_cfg.num_envs} episodes)"
+            )
         self.console.info(f"seed           : {self.config.seed}")
         log_cfg = self.config.logging
         video = (
@@ -84,7 +105,8 @@ class Trainer:
         except ImportError:
             pass
 
-    def _build_env(self):
+    def _make_single_env(self):
+        """Build one environment copy, exactly as configured."""
         env_cfg = self.config.env
         ascii_map = MAP[env_cfg.map_type]
         env = HarvestCommonsEnv(
@@ -103,6 +125,9 @@ class Trainer:
         if num_frames > 1:
             return FrameStackEnv(env, num_frames)
         return env
+
+    def _build_env(self) -> VecCommonsEnv:
+        return VecCommonsEnv(self._make_single_env, int(self.config.env.num_envs))
 
     def _projected_buffer_bytes(self) -> int:
         """Resident size the preference buffer will reach once full.
@@ -197,8 +222,8 @@ class Trainer:
         normalize = getattr(algorithm_cfg, "normalize_obs", False)
         return 1.0 / 255.0 if normalize else 1.0
 
-    def _format_reward_obs(self, obs: dict, agent_id: str) -> np.ndarray:
-        """Format an observation for the reward model.
+    def _format_reward_obs(self, observations: np.ndarray, row: int) -> np.ndarray:
+        """Format one row's observation for the reward model.
 
         Returns the frame in its native `uint8` dtype. Scaling happens inside
         `RewardModel.forward`, on device, via `obs_scale` -- so the preference
@@ -206,12 +231,14 @@ class Trainer:
         same saving applies to every host-to-device transfer. The effective
         input scale is unchanged: `_reward_obs_scale() * frame`.
         """
-        return np.ascontiguousarray(obs[agent_id]["curr_obs"])
+        return np.ascontiguousarray(observations[row])
 
     def train(self) -> None:
-        # Set total episodes for algorithms that support entropy annealing
+        # Set total episodes for algorithms that support entropy annealing.
+        # Counted in iterations, because `on_episode_end` -- which advances the
+        # controllers' schedule -- fires once per iteration.
         if hasattr(self.algorithm, "set_total_episodes"):
-            self.algorithm.set_total_episodes(self.config.episodes)
+            self.algorithm.set_total_episodes(self.iterations)
 
         video_recorder = self._build_video_recorder()
         rm_cfg = self.config.reward_model
@@ -267,87 +294,115 @@ class Trainer:
         self.console.start_episodes(self.config.episodes)
         recent_rewards: list = []
 
-        for episode in range(self.config.episodes):
-            obs, infos = self.env.reset(seed=None)
-            episode_rewards = {agent_id: 0.0 for agent_id in obs.keys()}
-            episode_pred_rewards = {agent_id: 0.0 for agent_id in obs.keys()} if rm_cfg.enabled else None
-            episode_agent_trajs = {agent_id: [] for agent_id in obs.keys()} if rm_cfg.enabled else None
-            # Track detailed step-by-step data per agent for extended logging
-            agent_episode_details = {agent_id: [] for agent_id in obs.keys()} if self.config.logging.log_agent_episode_details else None
+        vec = self.env
+        num_envs = vec.num_envs
+        num_agents = vec.num_agents
+        agent_ids = vec.agent_ids
+        num_rows = vec.num_rows
+
+        for iteration in range(self.iterations):
+            # `episode` stays an episode count, not an iteration count, so runs
+            # with different num_envs overlay on one x-axis.
+            episode = (iteration + 1) * num_envs - 1
+
+            obs, infos = vec.reset()
+            episode_rewards = np.zeros(num_rows, dtype=np.float64)
+            episode_pred_rewards = (
+                np.zeros(num_rows, dtype=np.float64) if rm_cfg.enabled else None
+            )
+            # One trajectory set per environment: each becomes its own
+            # EpisodeRecord, so the preference buffer keeps exact episodes.
+            episode_agent_trajs = (
+                [{agent_id: [] for agent_id in agent_ids} for _ in range(num_envs)]
+                if rm_cfg.enabled
+                else None
+            )
+            # Per-step detail is env 0 only: logging all num_envs would multiply
+            # the JSON volume for data already summarized in metrics.jsonl.
+            agent_episode_details = (
+                {agent_id: [] for agent_id in agent_ids}
+                if self.config.logging.log_agent_episode_details
+                else None
+            )
             step_count = 0
             video_recorder.start(episode)
+
             for step in range(self.config.env.ep_length):
                 actions = self.algorithm.act(obs, step)
-                step_agent_ids = []
-                step_obs_imgs = []
-                step_actions = []
-                if rm_cfg.enabled:
-                    for agent_id in obs.keys():
-                        obs_img = self._format_reward_obs(obs, agent_id)
-                        step_agent_ids.append(agent_id)
-                        step_obs_imgs.append(obs_img)
-                        step_actions.append(actions[agent_id])
-                        episode_agent_trajs[agent_id].append((obs_img, actions[agent_id]))
-                next_obs, rewards, dones, infos = self.env.step(actions)
+                next_obs, rewards, dones, infos = vec.step(actions)
+
                 if rm_cfg.enabled:
                     # One forward pass and one device sync for the whole step,
-                    # instead of one per agent.
-                    if step_obs_imgs:
-                        predicted = reward_model.predict_batch(
-                            np.stack(step_obs_imgs, axis=0), step_actions
+                    # covering every environment as well as every agent.
+                    obs_frames = [
+                        self._format_reward_obs(obs, row) for row in range(num_rows)
+                    ]
+                    predicted = reward_model.predict_batch(
+                        np.stack(obs_frames, axis=0), [int(a) for a in actions]
+                    )
+                    pred_rewards = np.asarray(predicted, dtype=np.float32).reshape(num_rows)
+                    for row in range(num_rows):
+                        env_idx, agent_idx = divmod(row, num_agents)
+                        episode_agent_trajs[env_idx][agent_ids[agent_idx]].append(
+                            (obs_frames[row], int(actions[row]))
                         )
-                        pred_rewards = {
-                            agent_id: float(value)
-                            for agent_id, value in zip(step_agent_ids, predicted)
-                        }
-                    else:
-                        pred_rewards = {}
-                    self.algorithm.observe(obs, actions, pred_rewards, next_obs, dones, infos, step)
-                    for agent_id, reward in pred_rewards.items():
-                        episode_pred_rewards[agent_id] += reward
+                    episode_pred_rewards += pred_rewards
+                    self.algorithm.observe(
+                        obs, actions, pred_rewards, next_obs, dones, infos, step
+                    )
                 else:
-                    self.algorithm.observe(obs, actions, rewards, next_obs, dones, infos, step)
-                video_recorder.record(self.env, step)
-                for agent_id, reward in rewards.items():
-                    episode_rewards[agent_id] += reward
-                # Track detailed step data per agent
+                    pred_rewards = None
+                    self.algorithm.observe(
+                        obs, actions, rewards, next_obs, dones, infos, step
+                    )
+
+                video_recorder.record(vec.envs[0], step)
+                episode_rewards += rewards
+
+                # Track detailed step data per agent, for environment 0 only.
                 if agent_episode_details is not None:
-                    for agent_id in obs.keys():
+                    for row, agent_id in enumerate(agent_ids):
                         # Check if an apple was eaten (reward > 0 indicates apple consumption)
-                        apple_eaten = bool(rewards[agent_id] > 0)
-                        
+                        apple_eaten = bool(rewards[row] > 0)
+
                         # Compute agent-specific metrics
-                        agent = self.env.agents[agent_id]
+                        agent = vec.envs[0].agents[agent_id]
                         metrics = compute_agent_step_metrics(
                             agent=agent,
-                            env=self.env,
-                            reward=rewards[agent_id],
+                            env=vec.envs[0],
+                            reward=float(rewards[row]),
                             apple_eaten=apple_eaten,
-                            nearby_radius=2
+                            nearby_radius=2,
                         )
-                        
+
                         step_data = {
                             "step": step,
-                            "action": int(actions[agent_id]),
-                            "reward": float(rewards[agent_id]),
-                            "done": bool(dones.get(agent_id, False)),
+                            "action": int(actions[row]),
+                            "reward": float(rewards[row]),
+                            "done": bool(dones[row]),
                             "apple_eaten": apple_eaten,
                             "nearby_apples": metrics["nearby_apples"],
                             "ate_last_apple_in_cluster": metrics["ate_last_apple_in_cluster"],
                         }
-                        if rm_cfg.enabled and pred_rewards is not None:
-                            step_data["predicted_reward"] = float(pred_rewards[agent_id])
+                        if pred_rewards is not None:
+                            step_data["predicted_reward"] = float(pred_rewards[row])
                         agent_episode_details[agent_id].append(step_data)
+
                 obs = next_obs
                 step_count = step + 1
-                global_step += 1
-                if dones.get("__all__", False):
-                    break
+                # num_envs transitions happened, not one.
+                global_step += num_envs
 
-            self.env.compute_social_metrics()
-            metrics = self.env.get_social_metrics()
+            per_env_metrics = vec.compute_social_metrics()
+            metrics = _average_social_metrics(per_env_metrics)
             if rm_cfg.enabled:
-                pref_buffer.add_episode(EpisodeRecord(agent_trajs=episode_agent_trajs, metrics=metrics))
+                for env_idx in range(num_envs):
+                    pref_buffer.add_episode(
+                        EpisodeRecord(
+                            agent_trajs=episode_agent_trajs[env_idx],
+                            metrics=per_env_metrics[env_idx],
+                        )
+                    )
             rm_metrics = {}
             if rm_cfg.enabled and (episode + 1) >= rm_cfg.warmup_episodes:
                 self.console.info_once(
@@ -377,45 +432,60 @@ class Trainer:
                 reward_model.save(reward_model_path)
                 self.console.info(f"reward model checkpoint saved at episode {episode + 1}")
 
-            algo_metrics = self.algorithm.on_episode_end(episode)
+            algo_metrics = self.algorithm.on_episode_end(iteration)
             if algo_metrics is None:
                 algo_metrics = {}
             if rm_metrics:
                 algo_metrics = dict(algo_metrics)
                 algo_metrics["reward_model"] = rm_metrics
             self._watch_entropy_saturation(algo_metrics)
+
+            # Averaged across the num_envs episodes this iteration completed.
+            by_env_agent = episode_rewards.reshape(num_envs, num_agents)
             payload = {
                 "episode": episode,
+                "num_envs": num_envs,
                 "steps": step_count,
-                "reward_sum": float(np.sum(list(episode_rewards.values()))),
-                "reward_mean": float(np.mean(list(episode_rewards.values()))),
-                "reward_per_agent": episode_rewards,
+                "reward_sum": float(by_env_agent.sum(axis=1).mean()),
+                "reward_mean": float(episode_rewards.mean()),
+                "reward_per_agent": {
+                    agent_id: float(by_env_agent[:, i].mean())
+                    for i, agent_id in enumerate(agent_ids)
+                },
                 "social_metrics": metrics,
                 "algo_metrics": algo_metrics,
             }
             if rm_cfg.enabled and episode_pred_rewards is not None:
-                payload["reward_pred_sum"] = float(np.sum(list(episode_pred_rewards.values())))
-                payload["reward_pred_mean"] = float(np.mean(list(episode_pred_rewards.values())))
-                payload["reward_pred_per_agent"] = episode_pred_rewards
-            if episode % self.config.logging.log_interval == 0:
+                pred_by_env_agent = episode_pred_rewards.reshape(num_envs, num_agents)
+                payload["reward_pred_sum"] = float(pred_by_env_agent.sum(axis=1).mean())
+                payload["reward_pred_mean"] = float(episode_pred_rewards.mean())
+                payload["reward_pred_per_agent"] = {
+                    agent_id: float(pred_by_env_agent[:, i].mean())
+                    for i, agent_id in enumerate(agent_ids)
+                }
+            if iteration % self.config.logging.log_interval == 0:
                 self.logger.log_episode(payload)
-            # Log detailed agent episode data to separate files
+            # Log detailed agent episode data to separate files, environment 0.
             if agent_episode_details is not None:
-                for agent_id, details in agent_episode_details.items():
+                for i, agent_id in enumerate(agent_ids):
                     episode_summary = {
                         "total_steps": step_count,
-                        "total_reward": float(episode_rewards[agent_id]),
-                        "steps": details,
+                        "total_reward": float(by_env_agent[0, i]),
+                        "steps": agent_episode_details[agent_id],
                     }
                     if rm_cfg.enabled and episode_pred_rewards is not None:
-                        episode_summary["total_predicted_reward"] = float(episode_pred_rewards[agent_id])
+                        episode_summary["total_predicted_reward"] = float(
+                            episode_pred_rewards.reshape(num_envs, num_agents)[0, i]
+                        )
                     if metrics:
                         episode_summary["social_metrics"] = metrics
                     self.logger.log_agent_episode_details(agent_id, episode, episode_summary)
             video_path = video_recorder.finish()
             if video_path is not None:
                 self.console.info(f"video saved: {video_path}")
-            self.console.episode_end(episode, self._episode_stats(payload))
+            self.console.episode_end(
+                episode, self._episode_stats(payload), advance=num_envs
+            )
             recent_rewards.append(payload["reward_mean"])
 
         self.console.close()

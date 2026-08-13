@@ -109,15 +109,25 @@ class TrainingConsole:
                 leave=True,
             )
 
-    def episode_end(self, episode: int, stats: Optional[Mapping[str, Any]] = None) -> None:
-        """Report one finished episode. `episode` is 0-based, as the loop counts."""
+    def episode_end(
+        self,
+        episode: int,
+        stats: Optional[Mapping[str, Any]] = None,
+        advance: int = 1,
+    ) -> None:
+        """Report finished episodes.
+
+        `episode` is the 0-based index of the last one completed; `advance` is
+        how many completed at once, which is `num_envs` when environments run
+        in parallel.
+        """
         if not self.enabled:
             return
         summary = format_metrics(stats)
         if self._bar is not None:
             if summary:
                 self._bar.set_postfix_str(summary, refresh=False)
-            self._bar.update(1)
+            self._bar.update(advance)
             return
         if self._should_report(episode):
             done = episode + 1

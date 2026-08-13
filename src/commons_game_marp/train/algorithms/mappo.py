@@ -7,6 +7,7 @@ import torch
 from torch import nn
 from torch.distributions import Categorical
 
+from ...env.vec_env import rows_to_agents
 from .base import Algorithm
 from .gae import compute_gae
 from .ippo import orthogonal_init
@@ -156,6 +157,7 @@ class MAPPOAlgorithm(Algorithm):
     def __init__(self, config: Any) -> None:
         super().__init__(config)
         self.agent_ids: List[str] = []
+        self.num_envs = 1
         self.agent_index: Dict[str, int] = {}
         self.num_actions = 0
         self.device = torch.device("cpu")
@@ -186,7 +188,8 @@ class MAPPOAlgorithm(Algorithm):
         obs_space = env.observation_space["curr_obs"]
         obs_shape = obs_space.shape
         self.num_actions = int(env.action_space.n)
-        self.agent_ids = list(env.agents.keys())
+        self.agent_ids = list(env.agent_ids)
+        self.num_envs = int(env.num_envs)
         self.agent_index = {agent_id: idx for idx, agent_id in enumerate(self.agent_ids)}
         num_agents = len(self.agent_ids)
 
@@ -220,86 +223,97 @@ class MAPPOAlgorithm(Algorithm):
         )
         self.ent_controller.set_total_episodes(self._total_episodes)
 
-    def _format_local_obs(self, obs: Dict[str, Any], agent_id: str) -> np.ndarray:
-        img = obs[agent_id]["curr_obs"]
+    def _format_local_obs(self, obs_batch: np.ndarray) -> np.ndarray:
+        """One agent's (num_envs, ...) uint8 rows -> the policy's input dtype."""
+        img = obs_batch.astype(np.float32)
         if self.config.normalize_obs:
-            img = (img / 255.0).astype(np.float32)
-        else:
-            img = img.astype(np.float32)
+            img = img / 255.0
         if self.config.flatten_obs:
-            return img.reshape(-1)
+            return img.reshape(obs_batch.shape[0], -1)
         return img
 
-    def _format_global_obs(self, obs: Dict[str, Any]) -> np.ndarray:
-        imgs = []
-        for agent_id in self.agent_ids:
-            if agent_id not in obs:
-                raise RuntimeError(f"Agent '{agent_id}' missing from observations.")
-            imgs.append(self._format_local_obs(obs, agent_id))
-        if self.config.flatten_obs:
-            return np.concatenate(imgs, axis=0)
-        return np.concatenate(imgs, axis=2)
+    def _format_global_obs(self, rows: np.ndarray) -> np.ndarray:
+        """Centralized state per environment: every agent's view, concatenated.
 
-    def act(self, observations: Dict[str, Any], step: int) -> Dict[str, int]:
-        local_obs = np.stack(
-            [self._format_local_obs(observations, agent_id) for agent_id in self.agent_ids], axis=0
+        Returns (num_envs, obs_dim * num_agents) when flattened, otherwise
+        (num_envs, H, W, C * num_agents). The concatenation axis is one higher
+        than in the single-env form because of the leading env axis.
+        """
+        per_agent = rows_to_agents(rows, self.num_envs, self.agent_ids)
+        imgs = [self._format_local_obs(per_agent[a]) for a in self.agent_ids]
+        if self.config.flatten_obs:
+            return np.concatenate(imgs, axis=1)
+        return np.concatenate(imgs, axis=3)
+
+    def _local_rows(self, rows: np.ndarray) -> np.ndarray:
+        """Formatted local observations, back in env-major row order."""
+        per_agent = rows_to_agents(rows, self.num_envs, self.agent_ids)
+        stacked = np.stack(
+            [self._format_local_obs(per_agent[a]) for a in self.agent_ids], axis=1
         )
+        return stacked.reshape(
+            self.num_envs * len(self.agent_ids), *stacked.shape[2:]
+        )
+
+    def act(self, observations: np.ndarray, step: int) -> np.ndarray:
+        local_rows = self._local_rows(observations)
         global_obs = self._format_global_obs(observations)
-        obs_tensor = torch.from_numpy(local_obs).float().to(self.device)
-        global_tensor = torch.from_numpy(global_obs).float().unsqueeze(0).to(self.device)
+        obs_tensor = torch.from_numpy(local_rows).float().to(self.device)
+        global_tensor = torch.from_numpy(global_obs).float().to(self.device)
 
         with torch.no_grad():
             logits = self.actor(obs_tensor)
             dist = Categorical(logits=logits)
             actions = dist.sample()
             logprobs = dist.log_prob(actions)
-            values = self.critic(global_tensor).squeeze(0)
+            values = self.critic(global_tensor)  # (num_envs, num_agents)
 
-        actions_np = actions.cpu().numpy()
+        actions_np = actions.cpu().numpy().astype(np.int64)
         self._last_step = {
-            "local_obs": local_obs,
+            "local_obs": local_rows,
             "global_obs": global_obs,
             "actions": actions_np,
-            "logprobs": logprobs.cpu().numpy(),
-            "values": values.cpu().numpy(),
+            "logprobs": logprobs.cpu().numpy().astype(np.float32),
+            # (num_envs, num_agents) -> rows, which is already env-major.
+            "values": values.cpu().numpy().reshape(-1).astype(np.float32),
         }
-        return {agent_id: int(actions_np[idx]) for idx, agent_id in enumerate(self.agent_ids)}
+        return actions_np
 
     def observe(
         self,
-        observations: Dict[str, Any],
-        actions: Dict[str, int],
-        rewards: Dict[str, float],
-        next_observations: Dict[str, Any],
-        dones: Dict[str, bool],
-        infos: Dict[str, Any],
+        observations: np.ndarray,
+        actions: np.ndarray,
+        rewards: np.ndarray,
+        next_observations: np.ndarray,
+        dones: np.ndarray,
+        infos: List[Dict[str, Any]],
         step: int,
     ) -> None:
         if not self._last_step:
             return
-        done_all = bool(dones.get("__all__", False))
-        rewards_arr = np.array([float(rewards[a]) for a in self.agent_ids], dtype=np.float32)
-        dones_arr = np.array(
-            [bool(dones.get(a, False)) or done_all for a in self.agent_ids], dtype=np.float32
-        )
+
         next_global = self._format_global_obs(next_observations)
-        next_global_tensor = torch.from_numpy(next_global).float().unsqueeze(0).to(self.device)
+        next_global_tensor = torch.from_numpy(next_global).float().to(self.device)
         with torch.no_grad():
-            next_values = self.critic(next_global_tensor).squeeze(0).cpu().numpy()
+            next_values = (
+                self.critic(next_global_tensor).cpu().numpy().reshape(-1).astype(np.float32)
+            )
 
         self.buffer.add_step(
             local_obs=self._last_step["local_obs"],
             global_obs=self._last_step["global_obs"],
             actions=self._last_step["actions"],
             logprobs=self._last_step["logprobs"],
-            rewards=rewards_arr,
-            dones=dones_arr,
+            rewards=np.asarray(rewards, dtype=np.float32),
+            dones=np.asarray(dones, dtype=np.float32),
             values=self._last_step["values"],
             next_values=next_values,
         )
 
         self._last_step = {}
-        if self.buffer.size() >= self.config.n_steps or done_all:
+        # Lockstep episodes: `on_episode_end` flushes the boundary, so the
+        # per-env timestep count is the only trigger needed here.
+        if self.buffer.size() >= self.config.n_steps:
             self._update()
             self.buffer.clear()
 
@@ -322,20 +336,29 @@ class MAPPOAlgorithm(Algorithm):
         advantages, returns = self.buffer.compute_advantages(
             gamma=self.config.gamma, gae_lambda=self.config.gae_lambda
         )
-        local_obs = np.stack(self.buffer.local_obs, axis=0)
-        global_obs = np.stack(self.buffer.global_obs, axis=0)
+        local_obs = np.stack(self.buffer.local_obs, axis=0)     # (T, E*A, ...)
+        global_obs = np.stack(self.buffer.global_obs, axis=0)   # (T, E, ...)
         actions = np.stack(self.buffer.actions, axis=0)
         logprobs = np.stack(self.buffer.logprobs, axis=0)
         values = np.stack(self.buffer.values, axis=0)
         T, N = actions.shape
+        num_agents = len(self.agent_ids)
+
         local_obs = local_obs.reshape(T * N, *local_obs.shape[2:])
-        global_obs = np.repeat(global_obs, N, axis=0)
+        # Each env's centralized state serves that env's num_agents rows, which
+        # sit consecutively because rows are env-major/agent-minor.
+        global_obs = np.repeat(
+            global_obs.reshape(T * self.num_envs, *global_obs.shape[2:]),
+            num_agents,
+            axis=0,
+        )
         actions = actions.reshape(T * N)
         logprobs = logprobs.reshape(T * N)
         values = values.reshape(T * N)
         advantages = advantages.reshape(T * N)
         returns = returns.reshape(T * N)
-        agent_idx = np.tile(np.arange(N, dtype=np.int64), T)
+        # The critic head is indexed by agent, and a row's agent is row % A.
+        agent_idx = np.tile(np.arange(num_agents, dtype=np.int64), T * self.num_envs)
 
         adv_mean = advantages.mean()
         adv_std = advantages.std() + 1e-8

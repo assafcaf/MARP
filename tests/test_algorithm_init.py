@@ -246,7 +246,7 @@ def test_ippo_builds_one_entropy_controller_per_agent(fake_env):
     algorithm = IPPOAlgorithm(IPPOConfig())
     algorithm.on_env_ready(fake_env)
 
-    assert set(algorithm.ent_controllers) == set(fake_env.agents)
+    assert set(algorithm.ent_controllers) == set(fake_env.agent_ids)
     controllers = list(algorithm.ent_controllers.values())
     assert len({id(c) for c in controllers}) == len(controllers)
 
@@ -279,9 +279,9 @@ def test_ippo_reports_per_agent_entropy_metrics(fake_env):
 
     metrics = algorithm.on_episode_end(0)
 
-    assert set(metrics["ent_coef_per_agent"]) == set(fake_env.agents)
+    assert set(metrics["ent_coef_per_agent"]) == set(fake_env.agent_ids)
     assert metrics["ent_coef"] == pytest.approx(
-        sum(metrics["ent_coef_per_agent"].values()) / len(fake_env.agents)
+        sum(metrics["ent_coef_per_agent"].values()) / len(fake_env.agent_ids)
     )
     assert metrics["target_entropy"] == pytest.approx(0.6 * math.log(8))
     assert metrics["entropy_per_agent"] == {"agent-0": 1.5, "agent-1": 0.5}
