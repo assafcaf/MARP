@@ -9,6 +9,11 @@ class EnvConfig:
     map_type: str = "small"
     num_agents: int = 1
     agent_view_range: int = 7
+    # Observations stacked along the channel axis. 1 leaves the env unwrapped;
+    # above 1 the trainer applies FrameStackEnv and every consumer -- policies,
+    # reward model, preference buffer -- widens with it. Note that the
+    # preference buffer's resident size scales linearly with this.
+    num_frames: int = 1
     ep_length: int = 600
     render: bool = False
     spawn_speed: str = "slow"

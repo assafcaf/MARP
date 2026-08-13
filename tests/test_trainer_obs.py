@@ -56,3 +56,38 @@ def test_stored_observations_stay_uint8(cls):
     """Buffer residency is the binding memory constraint, so the frame handed
     to the preference buffer must not be widened to float32 on the way in."""
     assert _format(cls()).dtype == np.uint8
+
+
+def test_build_env_returns_the_bare_env_at_one_frame():
+    from commons_game_marp.env.commons_env import HarvestCommonsEnv
+    from commons_game_marp.train.config import TrainerConfig
+
+    config = TrainerConfig()
+    config.env.num_frames = 1
+    config.env.num_agents = 2
+    config.env.map_type = "small"
+
+    stub = object.__new__(Trainer)
+    stub.config = config
+    env = Trainer._build_env(stub)
+
+    assert isinstance(env, HarvestCommonsEnv)
+
+
+def test_build_env_wraps_and_widens_the_observation_space_above_one_frame():
+    from commons_game_marp.env.frame_stack import FrameStackEnv
+    from commons_game_marp.train.config import TrainerConfig
+
+    config = TrainerConfig()
+    config.env.num_frames = 2
+    config.env.num_agents = 2
+    config.env.map_type = "small"
+
+    stub = object.__new__(Trainer)
+    stub.config = config
+    env = Trainer._build_env(stub)
+
+    assert isinstance(env, FrameStackEnv)
+    height, width, channels = env.observation_space["curr_obs"].shape
+    assert (height, width) == (15, 15)
+    assert channels == 6

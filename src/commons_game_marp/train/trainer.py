@@ -4,6 +4,7 @@ import numpy as np
 from omegaconf import OmegaConf
 
 from ..env.commons_env import HarvestCommonsEnv, MAP
+from ..env.frame_stack import FrameStackEnv
 from ..reward_model.preference_buffer import EpisodeRecord, PreferenceBuffer
 from ..reward_model.reward_model import RewardModel
 from ..reward_model.reward_trainer import RewardModelTrainer
@@ -45,9 +46,10 @@ class Trainer:
             f"algorithm      : {getattr(self.config.algorithm, 'name', 'unknown')} (device={device})"
         )
         self.console.info(f"episodes       : {self.config.episodes} x {env_cfg.ep_length} steps")
+        stack = f" frames={env_cfg.num_frames}" if env_cfg.num_frames > 1 else ""
         self.console.info(
             f"environment    : map={env_cfg.map_type} agents={env_cfg.num_agents}"
-            f" view={env_cfg.agent_view_range} spawn={env_cfg.spawn_speed}"
+            f" view={env_cfg.agent_view_range}{stack} spawn={env_cfg.spawn_speed}"
         )
         self.console.info(f"seed           : {self.config.seed}")
         log_cfg = self.config.logging
@@ -71,10 +73,10 @@ class Trainer:
         except ImportError:
             pass
 
-    def _build_env(self) -> HarvestCommonsEnv:
+    def _build_env(self):
         env_cfg = self.config.env
         ascii_map = MAP[env_cfg.map_type]
-        return HarvestCommonsEnv(
+        env = HarvestCommonsEnv(
             ascii_map=ascii_map,
             num_agents=env_cfg.num_agents,
             render=env_cfg.render,
@@ -84,6 +86,10 @@ class Trainer:
             metric=env_cfg.metric,
             penalty=env_cfg.penalty,
         )
+        num_frames = int(getattr(env_cfg, "num_frames", 1))
+        if num_frames > 1:
+            return FrameStackEnv(env, num_frames)
+        return env
 
     def _build_logger(self) -> ResultLogger:
         log_cfg = self.config.logging

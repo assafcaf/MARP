@@ -105,3 +105,16 @@ def test_env_config_dataclass_default_view_range():
     from commons_game_marp.train.config import EnvConfig
 
     assert EnvConfig().agent_view_range == 7
+
+
+@pytest.mark.parametrize("env_group", ["medium", "small"])
+def test_num_frames_defaults_to_one(env_group):
+    """Opt-in by design: at 1 the trainer skips the wrapper entirely, so the
+    default code path is unchanged rather than merely equivalent."""
+    config = _compose(f"env={env_group}")
+    assert config.env.num_frames == 1
+
+
+def test_num_frames_is_overridable():
+    config = _compose("env=medium", "env.num_frames=2")
+    assert config.env.num_frames == 2
