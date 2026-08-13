@@ -14,6 +14,12 @@ class EnvConfig:
     # reward model, preference buffer -- widens with it. Note that the
     # preference buffer's resident size scales linearly with this.
     num_frames: int = 1
+    # Independent environment copies stepped in lockstep. Above 1 the trainer
+    # runs `episodes // num_envs` iterations, each completing num_envs
+    # episodes, so `episodes` stays a total budget rather than an iteration
+    # count. Stepping is serial -- this buys decorrelated samples per update,
+    # not wall-clock speed.
+    num_envs: int = 1
     ep_length: int = 600
     render: bool = False
     spawn_speed: str = "slow"
@@ -168,6 +174,25 @@ class TrainerConfig:
     algorithm: Any = MISSING
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     reward_model: RewardModelConfig = field(default_factory=RewardModelConfig)
+
+
+def resolve_iterations(episodes: int, num_envs: int) -> int:
+    """Iterations needed to spend an `episodes` budget `num_envs` at a time.
+
+    Refuses a non-divisible pair rather than truncating: a run that quietly
+    completes 996 of a requested 1000 episodes is not comparable with one that
+    completed 1000, and nothing downstream would show the difference.
+    """
+    if num_envs < 1:
+        raise ValueError(f"env.num_envs must be >= 1, got {num_envs}")
+    remainder = episodes % num_envs
+    if remainder:
+        raise ValueError(
+            f"episodes ({episodes}) must be divisible by env.num_envs ({num_envs}); "
+            f"otherwise the episode budget is silently truncated. "
+            f"Use {episodes - remainder} or {episodes + num_envs - remainder} episodes."
+        )
+    return episodes // num_envs
 
 
 def register_configs() -> None:
