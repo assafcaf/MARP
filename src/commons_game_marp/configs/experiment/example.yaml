@@ -167,8 +167,16 @@ algorithm:
   # Clips the value update around the old value. `null` disables it.
   vf_clip: 10.0
 
-  # Env steps collected per agent before each update.
-  n_steps: 512
+  # Timesteps collected per environment before each update, so the batch is
+  # n_steps * num_envs. Null aligns the update with the episode boundary --
+  # one update per episode per env, over ep_length * num_envs transitions --
+  # which is also when the reward model retrains by default.
+  #
+  # A value that does not divide ep_length leaves a short final batch every
+  # episode, because the buffer is flushed at the boundary: 512 against
+  # ep_length 600 updates on 512 transitions and then on 88, below the 128
+  # minibatch size.
+  n_steps: null
 
   # Minibatch size within an update.
   batch_size: 128
@@ -281,8 +289,11 @@ reward_model:
   # Gradient steps taken each time the model updates.
   train_steps_per_update: 50
 
-  # Env steps between updates.
-  update_every_env_steps: 1000
+  # Env steps between updates. Null trains once at every episode end, the
+  # same cadence the policies use when `n_steps` is null. An integer keeps a
+  # step-denominated period, caught up one period at a time so the rate does
+  # not depend on num_envs.
+  update_every_env_steps: null
 
   # Episodes collected before the first update, so the buffer holds something
   # to compare against.

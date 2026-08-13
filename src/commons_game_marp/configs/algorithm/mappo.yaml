@@ -14,7 +14,9 @@ ent_coef_lr: 0.003
 ent_coef_min: 0.001
 ent_coef_max: 0.5
 vf_coef: 0.5
-n_steps: 2048
+# Null aligns the update with the episode boundary: one update per
+# episode per environment, over ep_length * num_envs transitions.
+n_steps: null
 batch_size: 256
 update_epochs: 4
 hidden_size: 256

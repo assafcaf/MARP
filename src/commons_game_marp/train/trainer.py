@@ -281,8 +281,13 @@ class Trainer:
                 f"warmup         : collecting preferences for {rm_cfg.warmup_episodes}"
                 " episodes before the first update"
             )
+            cadence = (
+                "at every episode end"
+                if rm_cfg.update_every_env_steps is None
+                else f"every {rm_cfg.update_every_env_steps} env steps"
+            )
             self.console.info(
-                f"updates        : every {rm_cfg.update_every_env_steps} env steps,"
+                f"updates        : {cadence},"
                 f" {rm_cfg.train_steps_per_update} steps of {rm_cfg.batch_pairs} pairs"
             )
             self.console.warn("policies learn from predicted rewards, not environment rewards")
@@ -413,24 +418,32 @@ class Trainer:
                     f"warmup complete after episode {episode + 1}"
                     f" -- reward model training starts, buffer holds {len(pref_buffer)} episodes",
                 )
-                # A catch-up loop, not a single fire: the check only runs at
-                # iteration boundaries, and one iteration is num_envs episodes
-                # of env steps. Firing once per boundary would make the update
-                # rate depend on num_envs -- at ep_length 600 and a 1000-step
-                # period, num_envs=1 updated every 1200 env steps while
-                # num_envs=4 updated every 2400. Advancing the marker by one
-                # period at a time keeps the rate at one update per
-                # `update_every_env_steps`, whatever num_envs is.
-                period = max(1, int(rm_cfg.update_every_env_steps))
-                while (global_step - last_rm_update_step) >= period:
-                    rm_metrics = rm_trainer.train(
+                def _train_reward_model():
+                    return rm_trainer.train(
                         pref_buffer,
                         phi_key=rm_cfg.phi,
                         mode=rm_cfg.mode,
                         batch_pairs=rm_cfg.batch_pairs,
                         train_steps=rm_cfg.train_steps_per_update,
                     )
-                    last_rm_update_step += period
+
+                if rm_cfg.update_every_env_steps is None:
+                    # One update per episode boundary -- the same cadence the
+                    # policies run on when `n_steps` is null.
+                    rm_metrics = _train_reward_model()
+                else:
+                    # A catch-up loop, not a single fire: the check only runs at
+                    # iteration boundaries, and one iteration is num_envs
+                    # episodes of env steps. Firing once per boundary would make
+                    # the update rate depend on num_envs -- at ep_length 600 and
+                    # a 1000-step period, num_envs=1 updated every 1200 env
+                    # steps while num_envs=4 updated every 2400. Advancing the
+                    # marker one period at a time holds the rate at one update
+                    # per `update_every_env_steps`, whatever num_envs is.
+                    period = max(1, int(rm_cfg.update_every_env_steps))
+                    while (global_step - last_rm_update_step) >= period:
+                        rm_metrics = _train_reward_model()
+                        last_rm_update_step += period
                     # Later updates are visible in the per-episode stats; the
                     # first one is worth calling out because it is the moment
                     # the predicted rewards stop being random.

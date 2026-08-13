@@ -61,7 +61,13 @@ class IPPOConfig:
     ent_coef_max: float = 0.5
     vf_coef: float = 0.5
     vf_clip: Optional[float] = 10.0
-    n_steps: int = 512
+    # Timesteps collected per environment before an update. Null aligns the
+    # update with the episode boundary by resolving to `env.ep_length`, so
+    # every episode ends in exactly one update over `ep_length * num_envs`
+    # transitions. Setting a value that does not divide `ep_length` leaves a
+    # short final batch each episode -- 512 against ep_length 600 updates on
+    # 512 transitions and then on 88, below the 128 minibatch size.
+    n_steps: Optional[int] = None
     batch_size: int = 128
     update_epochs: int = 2
     hidden_size: int = 256
@@ -86,7 +92,8 @@ class MAPPOConfig:
     ent_coef_min: float = 1e-3
     ent_coef_max: float = 0.5
     vf_coef: float = 0.5
-    n_steps: int = 1024
+    # Null aligns the update with the episode boundary; see IPPOConfig.n_steps.
+    n_steps: Optional[int] = None
     batch_size: int = 256
     update_epochs: int = 4
     hidden_size: int = 256
@@ -142,7 +149,12 @@ class RewardModelConfig:
     lr: float = 1e-4
     batch_pairs: int = 64
     train_steps_per_update: int = 50
-    update_every_env_steps: int = 1000
+    # Env steps between reward-model updates. Null trains once at every episode
+    # boundary, which is the same cadence the policies update on when
+    # `n_steps` is null. An integer keeps the step-denominated period, which
+    # the trainer catches up on a period at a time so the rate does not depend
+    # on num_envs.
+    update_every_env_steps: Optional[int] = None
     warmup_episodes: int = 50
     max_episodes_in_buffer: int = 5000
     device: str = "auto"

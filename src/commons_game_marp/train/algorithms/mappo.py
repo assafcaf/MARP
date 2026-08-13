@@ -10,7 +10,7 @@ from torch.distributions import Categorical
 from ...env.vec_env import rows_to_agents
 from .base import Algorithm
 from .gae import compute_gae
-from .ippo import orthogonal_init
+from .ippo import _resolve_n_steps, orthogonal_init
 from ..entropy_control import EntropyController
 
 
@@ -191,6 +191,7 @@ class MAPPOAlgorithm(Algorithm):
         self.agent_ids = list(env.agent_ids)
         self.num_envs = int(env.num_envs)
         self.agent_index = {agent_id: idx for idx, agent_id in enumerate(self.agent_ids)}
+        self.n_steps = _resolve_n_steps(self.config.n_steps, env)
         num_agents = len(self.agent_ids)
 
         device = self.config.device
@@ -313,7 +314,7 @@ class MAPPOAlgorithm(Algorithm):
         self._last_step = {}
         # Lockstep episodes: `on_episode_end` flushes the boundary, so the
         # per-env timestep count is the only trigger needed here.
-        if self.buffer.size() >= self.config.n_steps:
+        if self.buffer.size() >= self.n_steps:
             self._update()
             self.buffer.clear()
 

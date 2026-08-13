@@ -39,6 +39,26 @@ def orthogonal_init(
             nn.init.zeros_(layer.bias)
 
 
+def _resolve_n_steps(configured: Optional[int], env) -> int:
+    """Timesteps per environment between updates.
+
+    `None` aligns the update with the episode boundary: one update per episode
+    per environment, over `ep_length * num_envs` transitions. That is the
+    cadence the reward model runs on too, so policy and reward model retrain
+    together at the end of every episode.
+
+    An explicit value that does not divide `ep_length` leaves a short final
+    batch each episode, because the trainer flushes the buffer at the boundary
+    -- `n_steps=512` against `ep_length=600` updates on 512 transitions and
+    then on 88, below the default 128 minibatch.
+    """
+    if configured is None:
+        return int(env.ep_length)
+    if configured < 1:
+        raise ValueError(f"algorithm.n_steps must be >= 1 or null, got {configured}")
+    return int(configured)
+
+
 class SingleAgentBuffer:
     """Rollout buffer for one agent across `num_envs` parallel environments.
 
@@ -245,6 +265,7 @@ class IPPOAlgorithm(Algorithm):
         self.agent_ids = list(env.agent_ids)
         self.num_envs = int(env.num_envs)
         self.num_agents = len(self.agent_ids)
+        self.n_steps = _resolve_n_steps(self.config.n_steps, env)
 
         device = self.config.device
         if device == "auto":
@@ -369,7 +390,7 @@ class IPPOAlgorithm(Algorithm):
         # are lockstep and fixed-length, and `on_episode_end` already flushes
         # whatever is left in the buffers at the boundary.
         min_buffer_size = min(buf.size() for buf in self.buffers.values())
-        if min_buffer_size >= self.config.n_steps:
+        if min_buffer_size >= self.n_steps:
             self._update_all()
 
     def on_episode_end(self, episode: int) -> Dict[str, Any]:

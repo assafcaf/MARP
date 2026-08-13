@@ -67,6 +67,8 @@ class VecCommonsEnv:
         self.num_agents = len(self.agent_ids)
         self.observation_space = probe.observation_space
         self.action_space = probe.action_space
+        # Read by algorithms that align their update period to the episode.
+        self.ep_length = int(probe.ep_length)
 
     @property
     def num_rows(self) -> int:
