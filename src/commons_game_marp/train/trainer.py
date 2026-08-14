@@ -56,6 +56,26 @@ class Trainer:
             self.config.episodes, int(self.config.env.num_envs)
         )
         self.env = self._build_env()
+        # Gymnasium spaces carry their own RNG, seeded from OS entropy unless
+        # told otherwise, so `algorithm=random` -- which calls
+        # `action_space.sample()` -- was never governed by `seed`. Nothing
+        # noticed while `MapEnv.reset` was reseeding the global streams every
+        # episode, because that masked it in the paths people watched.
+        try:
+            self.env.action_space.seed(int(self.config.seed))
+        except AttributeError:
+            pass
+        # Re-seed after the environments exist. Constructing them draws from
+        # the global streams -- but only when they are built in this process,
+        # so the stream position after `_build_env` depended on `num_workers`.
+        # Everything seeded downstream of here (policy network init, the
+        # preference buffer's pair sampling) inherited that difference and
+        # produced different numbers for the same config. Re-seeding pins the
+        # starting point regardless of where the environments live.
+        #
+        # Safe for the environments themselves: the trainer passes explicit
+        # per-iteration seeds to `reset`, which rebuilds each copy's RNG.
+        self._seed_rngs(self.config.seed)
         self.algorithm = build_algorithm(config.algorithm)
         self.algorithm.on_env_ready(self.env)
         self.logger = self._build_logger()
@@ -130,8 +150,27 @@ class Trainer:
             return FrameStackEnv(env, num_frames)
         return env
 
-    def _build_env(self) -> VecCommonsEnv:
-        return VecCommonsEnv(self._make_single_env, int(self.config.env.num_envs))
+    def _build_env(self):
+        """In-process or worker-backed, depending on `env.num_workers`.
+
+        Both satisfy the same interface and produce bit-identical episodes, so
+        nothing downstream branches on which one it got.
+        """
+        env_cfg = self.config.env
+        num_envs = int(env_cfg.num_envs)
+        num_workers = int(getattr(env_cfg, "num_workers", 0))
+        if num_workers <= 0:
+            return VecCommonsEnv(self._make_single_env, num_envs)
+
+        from ..env.env_spec import EnvSpec
+        from ..env.subproc_vec_env import SubprocVecCommonsEnv
+
+        spec = EnvSpec.from_config(
+            env_cfg,
+            step_metrics=self._step_metrics_needed(),
+            nearby_apple_radius=self.config.logging.nearby_apple_radius,
+        )
+        return SubprocVecCommonsEnv(spec, num_envs, num_workers)
 
     def _projected_buffer_bytes(self) -> int:
         """Resident size the preference buffer will reach once full.
@@ -236,6 +275,17 @@ class Trainer:
         input scale is unchanged: `_reward_obs_scale() * frame`.
         """
         return np.ascontiguousarray(observations[row])
+
+    def _episode_seeds(self, iteration: int):
+        """One seed per environment copy for this iteration.
+
+        Derived from the run seed, the iteration and the copy index, so an
+        episode is determined by the configuration alone -- not by how many
+        workers happen to be running or what else drew from a shared stream.
+        That is what lets `num_workers` change without changing results.
+        """
+        base = (int(self.config.seed) * 1_000_003 + iteration * 9_176) & 0x7FFFFFFF
+        return [(base + index * 7_919) & 0x7FFFFFFF for index in range(self.env.num_envs)]
 
     def _step_metrics_needed(self) -> bool:
         """Whether anything downstream consumes the env's per-step metrics."""
@@ -345,7 +395,7 @@ class Trainer:
             # with different num_envs overlay on one x-axis.
             episode = (iteration + 1) * num_envs - 1
 
-            obs, infos = vec.reset()
+            obs, infos = vec.reset(self._episode_seeds(iteration))
             episode_rewards = np.zeros(num_rows, dtype=np.float64)
             episode_pred_rewards = (
                 np.zeros(num_rows, dtype=np.float64) if rm_cfg.enabled else None
@@ -410,7 +460,8 @@ class Trainer:
                         obs, actions, rewards, next_obs, dones, infos, step
                     )
 
-                video_recorder.record(vec.envs[0], step)
+                if video_recorder.is_recording:
+                    video_recorder.record_frame(vec.render_frame(0), step)
                 episode_rewards += rewards
 
                 env_rewards = self._env_rewards(infos, rewards)
