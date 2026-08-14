@@ -23,7 +23,7 @@ Stepping is serial. The goal is decorrelated samples per update, not wall-clock
 throughput, so there are no worker processes.
 """
 
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -80,18 +80,30 @@ class VecCommonsEnv:
     def agents_to_rows(self, per_agent: Dict[str, np.ndarray]) -> np.ndarray:
         return agents_to_rows(per_agent, self.num_envs, self.agent_ids)
 
-    def reset(self) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
+    def reset(self, seeds: Optional[Sequence[Optional[int]]] = None
+              ) -> Tuple[np.ndarray, List[Dict[str, Any]]]:
         """Reset every environment.
 
-        No seed is passed: `MapEnv.reset` reseeds the *global* numpy and random
-        modules, so seeding per copy would reseed the process. The copies
-        decorrelate by drawing sequentially from the one stream seeded in
-        `Trainer._seed_rngs`.
+        `seeds` gives one seed per copy. Passing them is what makes a run
+        reproducible *and* independent of where the environments live: worker
+        processes have their own RNG state, so the old approach -- reset with
+        `seed=None` and let the copies decorrelate by drawing sequentially from
+        the one global stream seeded in `Trainer._seed_rngs` -- cannot produce
+        the same episodes once the copies are in different processes.
+
+        `seeds=None` keeps that old behaviour, which is still what an
+        unseeded, single-process run wants.
         """
+        if seeds is not None and len(seeds) != self.num_envs:
+            raise ValueError(
+                f"expected {self.num_envs} seeds, got {len(seeds)}"
+            )
         obs_rows: List[np.ndarray] = []
         infos: List[Dict[str, Any]] = []
-        for env in self.envs:
-            observations, env_infos = env.reset(seed=None)
+        for env_idx, env in enumerate(self.envs):
+            observations, env_infos = env.reset(
+                seed=None if seeds is None else seeds[env_idx]
+            )
             for agent_id in self.agent_ids:
                 obs_rows.append(observations[agent_id]["curr_obs"])
                 infos.append(env_infos.get(agent_id, {}))
@@ -130,6 +142,17 @@ class VecCommonsEnv:
             np.asarray(dones, dtype=bool),
             infos,
         )
+
+    def render_frame(self, env_idx: int = 0) -> np.ndarray:
+        """RGB frame of one environment, for video capture.
+
+        Returned as an array rather than written to disk by the environment, so
+        the subprocess implementation can ship the same thing back over a pipe.
+        """
+        return self.envs[env_idx].render()
+
+    def close(self) -> None:
+        """Present so callers can close either implementation uniformly."""
 
     def compute_social_metrics(self) -> List[Dict[str, float]]:
         """Per-env social metrics for the episode just finished.

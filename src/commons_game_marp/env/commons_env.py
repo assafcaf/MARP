@@ -247,7 +247,7 @@ class HarvestCommonsEnv(MapEnv):
                                     num_apples += 1
 
                 spawn_prob = self.spawn_speed[min(num_apples, 3)]
-                rand_num = np.random.rand(1)[0]
+                rand_num = self.np_random.random()
                 if rand_num < spawn_prob:
                     new_apple_points.append((row, col, 'A'))
         return new_apple_points

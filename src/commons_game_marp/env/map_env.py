@@ -38,6 +38,17 @@ class MapEnv(gymnasium.Env):
             Turn it on only for an external consumer that needs global state.
         """# rather to use effiency or effiency*peace
         self.include_state_in_info = include_state_in_info
+        # Per-environment RNGs. Every source of randomness in here used to draw
+        # from the process-global numpy/random streams, which made an episode
+        # depend on how many other environments shared the process and in what
+        # order they stepped -- so results changed with `num_workers`, and two
+        # copies in one process were correlated through the shared stream.
+        #
+        # The seeds are drawn from the global stream at construction, so a run
+        # is still governed by `Trainer._seed_rngs`; after that each copy is
+        # self-contained.
+        self.np_random = np.random.default_rng(np.random.randint(0, 2**31 - 1))
+        self.py_random = random.Random(np.random.randint(0, 2**31 - 1))
         self.num_agents = num_agents
         self.base_map = self.ascii_to_numpy(ascii_map)
         # map without agents or beams
@@ -186,8 +197,10 @@ class MapEnv(gymnasium.Env):
             to be zero.
         """
         if seed is not None:
-            np.random.seed(seed)
-            random.seed(seed)
+            # Re-seed this environment only. Seeding the global streams here
+            # reset the policy's exploration RNG once per episode.
+            self.np_random = np.random.default_rng(seed)
+            self.py_random = random.Random(seed)
         self.beam_pos = []
         self.agents = {}
         self.setup_agents()
@@ -393,7 +406,7 @@ class MapEnv(gymnasium.Env):
 
             # shuffle so that a random agent has slot priority
             shuffle_list = list(zip(agent_to_slot, move_slots))
-            np.random.shuffle(shuffle_list)
+            self.np_random.shuffle(shuffle_list)
             agent_to_slot, move_slots = zip(*shuffle_list)
             unique_move, indices, return_count = np.unique(move_slots, return_index=True,
                                                            return_counts=True, axis=0)
@@ -640,7 +653,7 @@ class MapEnv(gymnasium.Env):
         """
         curr_agent_pos = [agent.get_pos().tolist() for agent in self.agents.values()]
         order = list(range(len(self.spawn_points)))
-        random.shuffle(order)
+        self.py_random.shuffle(order)
         for index in order:
             spawn_point = self.spawn_points[index]
             if [spawn_point[0], spawn_point[1]] not in curr_agent_pos:
@@ -649,7 +662,7 @@ class MapEnv(gymnasium.Env):
 
     def spawn_rotation(self):
         """Return a randomly selected initial rotation for an agent"""
-        rand_int = np.random.randint(len(ORIENTATIONS.keys()))
+        rand_int = int(self.np_random.integers(len(ORIENTATIONS.keys())))
         return list(ORIENTATIONS.keys())[rand_int]
 
     def rotate_view(self, orientation, view):
