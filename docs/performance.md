@@ -14,44 +14,60 @@ machine. Measured, not estimated.
 `num_envs` stays the total episode budget divided across iterations, so raising
 it does not change how much experience a run collects.
 
+## A note on the numbers
+
+Absolute throughput on this machine varies by more than 2x depending on what
+else is running, so every figure below comes from **interleaved A/B runs** --
+the two variants measured back to back within seconds of each other, from the
+per-iteration `time/fps` the trainer logs (which excludes setup and teardown).
+Trust the ratios; treat the absolute values as indicative.
+
 ## What `num_workers` is worth
 
-Steady-state training throughput, `num_envs=8`, measured from the per-iteration
-`time/fps` the trainer logs (so setup and teardown are excluded):
+`num_envs=8`, medium map, 5 agents, random policy:
 
 | `num_workers` | agent-steps/s | speedup |
 |---|---|---|
-| 0 (in-process) | 1,624 | 1.00x |
-| 2 | 2,014 | 1.24x |
-| 4 | 2,978 | 1.83x |
-| 6 | 3,286 | 2.02x |
-| 8 | 4,229 | **2.60x** |
+| 0 (in-process) | 4,541 | 1.00x |
+| 8 | 18,388 | **4.05x** |
 
-Environment stepping alone parallelises better than the run as a whole:
+Environment stepping in isolation scales up to the point where each worker owns
+a single environment; past that the per-step pipe round trip costs more than the
+work it carries. Measured on pure stepping at `num_envs=8`: 3.50x at 4 workers,
+falling back to 2.35x at 8. In a full training run the extra workers still help,
+because the parent is doing other work between steps.
 
-| implementation | agent-steps/s | speedup |
-|---|---|---|
-| in-process | 2,657 | 1.00x |
-| 2 workers | 4,459 | 1.68x |
-| 4 workers | 9,305 | **3.50x** |
-| 8 workers | 6,252 | 2.35x |
-
-Two things to read off that second table. Stepping scales well up to the point
-where each worker owns only one environment; past that the per-step pipe
-round-trip costs more than the work it carries, which is why 8 workers over 8
-environments is *slower* than 4. And the gap between 3.50x on stepping and
-2.60x end-to-end is the serial remainder — action selection, the statistics
-accumulator, the reward model's forward pass, logging — none of which moves to a
-worker.
+The remaining gap to linear is the serial part of the loop -- action selection,
+the statistics accumulator, the reward model's forward pass, logging -- none of
+which moves to a worker.
 
 ### Choosing a value
 
-- Start at `num_workers = num_envs / 2`, so each worker owns two environments.
+- `num_workers = num_envs` is a reasonable default; `num_envs / 2` costs little
+  and leaves cores free.
 - More workers than `num_envs` is clamped to `num_envs`.
 - Each worker is a process; keep the total under the core count.
 - Short runs will look worse than this table: workers take about a second to
   spawn, and closing the TensorBoard writer costs ~5s at the end of *any* run.
   Neither scales with episode count, so both vanish in a real run.
+
+## Colour conversion
+
+`map_to_colors` converts a character grid to RGB. It used to be a nested Python
+loop doing a dict lookup and a three-element assignment per cell -- 225 of each
+per agent view, per agent, per step. It is now a single fancy-index into a
+lookup table built once per colour dict.
+
+| `num_workers` | nested loop | lookup table | speedup |
+|---|---|---|---|
+| 0 | 2,737 | 4,541 | **1.66x** |
+| 8 | 18,479 | 18,388 | 1.00x |
+
+Worth reading carefully: the win is real in-process and **nil** with workers,
+because the conversion happens inside the worker, which is no longer the
+bottleneck. It is the right change regardless -- it makes the single-process
+path much faster, which is what tests, short runs and debugging all use -- but
+it will not speed up a worker-backed production run.
 
 ## The other 2.19x
 
@@ -102,6 +118,5 @@ listed above. If more is needed, in rough order of value:
 2. **Send observations through shared memory** rather than pickling them down a
    pipe. At `num_envs=8`, 5 agents, a 15x15x3 frame, that is ~13.5 KB per step
    each way.
-3. **Cut `map_to_colors`.** Even after the `state` fix it is the largest single
-   cost inside a step. It is a per-cell Python loop over a colour dict; a
-   vectorised lookup table would replace it.
+3. **Cut the remaining per-step allocation.** `get_map_with_agents` copies the
+   whole world map every step, and `return_view` pads a fresh array per agent.

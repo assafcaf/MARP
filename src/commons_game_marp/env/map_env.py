@@ -309,12 +309,54 @@ class MapEnv(gymnasium.Env):
         if not full_map:
             map[map.shape[0]//2, map.shape[1]//2] = 'S'
 
-        rgb_arr = np.zeros((map.shape[0], map.shape[1], 3), dtype=np.uint8)
-        for row_elem in range(map.shape[0]):
-            for col_elem in range(map.shape[1]):
-                rgb_arr[row_elem, col_elem, :] = color_map[map[row_elem, col_elem]]
+        lut, known = self._colour_lut(color_map)
+        # A character array of itemsize 4 is one UCS-4 code point per cell, so
+        # viewing it as uint32 gives the code points directly and the whole
+        # conversion becomes one fancy-index into the table. The nested Python
+        # loop this replaces did a dict lookup and a 3-element assignment per
+        # cell -- 225 of each per agent view, per agent, per step, and it was
+        # the single largest cost inside `step`.
+        codes = map if map.dtype.itemsize == 4 else map.astype('<U1')
+        codes = codes.view(np.uint32).reshape(map.shape)
 
-        return rgb_arr
+        # Preserves the KeyError the dict lookup used to raise. One vectorised
+        # test, rather than silently rendering an unmapped character black.
+        if codes.max(initial=0) >= known.size or not known[codes].all():
+            missing = {
+                chr(code) for code in np.unique(codes)
+                if code >= known.size or not known[code]
+            }
+            raise KeyError(
+                f"no colour for map character(s) {sorted(missing)!r}"
+            )
+        return lut[codes]
+
+    def _colour_lut(self, color_map):
+        """`(lut, known)` for a colour dict, built once and cached.
+
+        `lut[code]` is the RGB triple for the character with that code point;
+        `known[code]` says whether the dict defined one. Cached per dict
+        identity because `step` passes the same `self.color_map` object every
+        time, and rebuilding a 128-row table per agent per step would give back
+        most of what the vectorisation wins.
+        """
+        cached = getattr(self, "_colour_lut_cache", None)
+        if cached is not None and cached[0] is color_map:
+            return cached[1], cached[2]
+
+        # `''` is a legitimate key (see constants.py) and numpy stores an empty
+        # character cell as code point 0, so it maps there rather than being
+        # skipped.
+        codes = {(ord(key) if key else 0): value for key, value in color_map.items()}
+        size = max(codes) + 1
+        lut = np.zeros((size, 3), dtype=np.uint8)
+        known = np.zeros(size, dtype=bool)
+        for code, colour in codes.items():
+            lut[code] = colour
+            known[code] = True
+
+        self._colour_lut_cache = (color_map, lut, known)
+        return lut, known
 
     @property
     def state(self):

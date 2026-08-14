@@ -214,7 +214,7 @@ tensorboard --logdir logs
 
 **[docs/performance.md](docs/performance.md) covers throughput** -- `env.num_envs`
 is a batching knob and buys no speed on its own; `env.num_workers` is the speed
-knob, worth a measured 2.6x at 8 workers, with byte-identical results.
+knob, worth a measured 4x at 8 workers, with byte-identical results.
 
 **[docs/metrics.md](docs/metrics.md) is the full tag catalog** -- what every
 scalar means and what to read it for. Beyond the returns and social metrics, a
