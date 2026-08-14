@@ -110,7 +110,14 @@ Named combinations live in `configs/experiment/` and are selected with a `+`:
 ```bash
 uv run commons-game train +experiment=mappo
 uv run commons-game train +experiment=ippo episodes=500
+uv run commons-game train +experiment=baseline          # no reward model
 ```
+
+`baseline` is the control arm for the reward-model experiments: policies learn
+from environment rewards, with everything else inherited from
+`sequence_narrow_vs_input_agg` so it cannot drift from the arms it is compared
+against. Runs land in `logs/ippo-map=medium-agents=5-rm=off/`. Swap the learner
+with `algorithm=mappo` on the command line.
 
 To write a new one, copy the annotated template
 [`configs/experiment/example.yaml`](src/commons_game_marp/configs/experiment/example.yaml).
@@ -243,7 +250,7 @@ Config tips (each is a command-line override, e.g. `logging.video_enabled=false`
 - `logging.video_enabled=false` disables video capture for faster training.
 - `logging.log_agent_episode_details=true` (default) enables detailed per-agent episode logging to separate files.
 - The last episode is always recorded (if video is enabled), regardless of `video_every_n_episodes`.
-- Ready-made combinations: `+experiment=dqn`, `+experiment=ippo`, `+experiment=mappo`.
+- Ready-made combinations: `+experiment=baseline` (no reward model), `+experiment=dqn`, `+experiment=ippo`, `+experiment=mappo`.
 
 ## Algorithms
 
