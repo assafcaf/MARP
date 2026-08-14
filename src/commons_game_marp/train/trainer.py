@@ -121,6 +121,7 @@ class Trainer:
             spawn_speed=env_cfg.spawn_speed,
             metric=env_cfg.metric,
             penalty=env_cfg.penalty,
+            include_state_in_info=env_cfg.include_state_in_info,
         )
         num_frames = int(env_cfg.num_frames)
         if num_frames < 1:

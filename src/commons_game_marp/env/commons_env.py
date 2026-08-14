@@ -47,7 +47,8 @@ EMPTY_METRICS = {
 class HarvestCommonsEnv(MapEnv):
 
     def __init__(self, ascii_map=HARVEST_MAP, num_agents=1, render=False, agent_view_range=HARVEST_DEFAULT_VIEW_SIZE,
-                 color_map=None, ep_length=600, spawn_speed='slow', metric="Efficiency", penalty=False):
+                 color_map=None, ep_length=600, spawn_speed='slow', metric="Efficiency", penalty=False,
+                 include_state_in_info=False):
         self.ep_length = ep_length
         self.apple_points = []
         self.agent_view_range = agent_view_range
@@ -55,7 +56,8 @@ class HarvestCommonsEnv(MapEnv):
         self.metric=metric
         self.penalty = penalty
 
-        super().__init__(ascii_map, num_agents, render, color_map=color_map)
+        super().__init__(ascii_map, num_agents, render, color_map=color_map,
+                         include_state_in_info=include_state_in_info)
 
         self.rewards_record = {}
         self.timeout_record = {}

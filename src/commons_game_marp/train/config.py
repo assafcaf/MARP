@@ -25,6 +25,13 @@ class EnvConfig:
     spawn_speed: str = "slow"
     metric: str = "Efficiency"
     penalty: bool = False
+    # Put the full-map RGB render on every agent's info dict as `state`.
+    # Off by default: it is a whole-map render per agent per step -- 1938 bytes
+    # against the observation's 675 on the medium map -- that nothing in this
+    # repo reads. Enabling it measured 2.2x slower (3064 -> 1398 agent-steps/s)
+    # and, with `num_workers` above 0, adds ~15 MB per iteration of pipe
+    # traffic. Turn it on only for an external consumer that needs global state.
+    include_state_in_info: bool = False
 
 
 @dataclass

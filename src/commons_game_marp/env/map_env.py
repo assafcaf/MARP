@@ -10,7 +10,8 @@ from .constants import ACTIONS, ORIENTATIONS, DIFFERENT_COLORMAP, SAME_COLORMAP
 
 class MapEnv(gymnasium.Env):
 
-    def __init__(self, ascii_map, num_agents=1, render=True, color_map=None, same_color=False):
+    def __init__(self, ascii_map, num_agents=1, render=True, color_map=None, same_color=False,
+                 include_state_in_info=False):
         """
 
         Parameters
@@ -24,7 +25,19 @@ class MapEnv(gymnasium.Env):
             Whether to render the environment
         color_map: dict
             Specifies how to convert between ascii chars and colors
+        include_state_in_info: bool
+            Put the full-map RGB render on every agent's info dict as `state`.
+
+            Off by default, and that default is worth defending. The render is a
+            whole-map `map_to_colors` pass *per agent per step* -- 1938 bytes on
+            the medium map against 675 for the observation the agent actually
+            sees -- and it measured at ~48% of total step time with nothing in
+            the repo reading it. It also has to cross a process boundary once
+            the environments run in workers, at ~15 MB per iteration.
+
+            Turn it on only for an external consumer that needs global state.
         """# rather to use effiency or effiency*peace
+        self.include_state_in_info = include_state_in_info
         self.num_agents = num_agents
         self.base_map = self.ascii_to_numpy(ascii_map)
         # map without agents or beams
@@ -148,7 +161,9 @@ class MapEnv(gymnasium.Env):
             observations[agent.agent_id] = {"curr_obs": rgb_arr}
             rewards[agent.agent_id] = agent.compute_reward()
             dones[agent.agent_id] = agent.get_done()
-            infos[agent.agent_id] = {"state": self.state}
+            infos[agent.agent_id] = (
+                {"state": self.state} if self.include_state_in_info else {}
+            )
         dones["__all__"] = np.any(list(dones.values()))
         return observations, rewards, dones, infos
 
@@ -190,7 +205,9 @@ class MapEnv(gymnasium.Env):
             rgb_arr = self.map_to_colors(agent.get_state(), self.color_map, full_map=False)
             # observations[agent.agent_id] = rgb_arr
             observations[agent.agent_id] = {"curr_obs": rgb_arr}
-            infos[agent.agent_id] = {"state": self.state}
+            infos[agent.agent_id] = (
+                {"state": self.state} if self.include_state_in_info else {}
+            )
         return observations, infos
 
     @property
