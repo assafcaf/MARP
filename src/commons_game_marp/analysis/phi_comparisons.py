@@ -15,7 +15,6 @@ All graphs use Standard Error (SE) for shading.
 import argparse
 import json
 import os
-import sys
 from typing import Any, Dict, List, Tuple, Optional
 
 import matplotlib
@@ -23,11 +22,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Add scripts directory to path
-script_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, script_dir)
-
-from process_all_sessions import (
+from .sessions import (
     IPPO_SESSIONS,
     MAPPO_SESSIONS,
     get_sessions_for_algorithm,
@@ -593,9 +588,10 @@ def _generate_all_plots(
             print(f"  [FAIL] Failed: {phi} gallery")
 
 
-def main():
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate phi comparison and social metrics gallery plots."
+        prog="commons-game plot phi",
+        description="Generate phi comparison and social metrics gallery plots.",
     )
     parser.add_argument(
         "--algorithm",
@@ -623,8 +619,10 @@ def main():
         default=10,
         help="Smoothing window size for the smoothed version (default: 10). SE is not affected by smoothing.",
     )
-    args = parser.parse_args()
-    
+    return parser
+
+
+def run(args: argparse.Namespace) -> int:
     # Get sessions for the specified algorithm
     sessions = get_sessions_for_algorithm(args.algorithm)
     
@@ -675,5 +673,5 @@ def main():
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run(build_parser().parse_args()))
 

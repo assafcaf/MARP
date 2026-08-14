@@ -1,0 +1,390 @@
+# @package _global_
+#
+# ============================================================================
+# ANNOTATED TEMPLATE -- copy this file to start a new experiment.
+# ============================================================================
+#
+# Every value below is spelled out with its default and what it does, so a new
+# experiment can be written by editing rather than by hunting through
+# `src/commons_game_marp/train/config.py`.
+#
+#   # run it as-is
+#   uv run commons-game train +experiment=example
+#
+#   # start your own from it
+#   cp src/commons_game_marp/configs/experiment/example.yaml \
+#      src/commons_game_marp/configs/experiment/my_run.yaml
+#   uv run commons-game train +experiment=my_run
+#
+# A preset is not a wall: anything here is still overridable per invocation,
+# and sweepable with `-m`:
+#
+#   uv run commons-game train +experiment=my_run episodes=500 seed=7
+#   uv run commons-game train -m +experiment=my_run seed=0,1,2
+#
+# Delete the keys you do not care about. Anything omitted falls back to the
+# group defaults selected under `defaults:`, so a short preset is a fine
+# preset -- see `experiment/ippo.yaml` for what that looks like in practice.
+#
+# Output lands in one directory per run, grouped by configuration:
+#   logs/<algorithm>-map=..-agents=..-rm=../<timestamp>-seed=N/
+# holding Hydra's `.hydra/` snapshot and job log next to metrics.jsonl,
+# tensorboard/, videos/ and run_info.json. See the README's Outputs section.
+#
+# Check the composed result before spending GPU hours on it:
+#   uv run commons-game train +experiment=my_run --cfg job
+# ============================================================================
+
+defaults:
+  # Which variant of each config group this experiment starts from. The blocks
+  # further down then adjust individual values inside the selected variant.
+  - override /env: medium # small | medium
+  - override /algorithm: ippo # dqn | ippo | mappo | random
+  - override /reward_model: narrow_view # off | narrow_view | input_aggregation
+
+# ---------------------------------------------------------------------------
+# Top level
+# ---------------------------------------------------------------------------
+
+# Training episodes. One episode == `env.ep_length` steps.
+episodes: 200
+
+# RNG seed for python/numpy/torch. `null` draws one at startup and records it
+# in the run's config.yaml and run_info.json.
+seed: 0
+
+# ---------------------------------------------------------------------------
+# Environment
+#
+# The Harvest commons: agents walk a grid, eat apples that regrow at a rate
+# depending on how many apples remain nearby, and may FIRE at each other.
+# ---------------------------------------------------------------------------
+
+env:
+  # small (7x11, sparse) | medium (16x38). Must match the `override /env`
+  # above -- that is what the map layout and run directory name are read from.
+  map_type: medium
+
+  # Agents on the map. The commons dilemma needs more than one; the small map
+  # is usually run with 1 for smoke tests.
+  num_agents: 5
+
+  # Half-width of an agent's egocentric view, so 7 gives a 15x15x3 RGB
+  # observation. Matches the reference implementation.
+  agent_view_range: 7
+
+  # Observations stacked along the channel axis, so 2 gives 15x15x6. 1 leaves
+  # the env unwrapped. Above 1 the policies, reward model and preference
+  # buffer all widen with it -- and the buffer's resident size scales
+  # linearly, so check the startup warning before raising this with a long
+  # buffer.
+  num_frames: 1
+
+  # Independent environment copies stepped in lockstep. Each policy update then
+  # draws on num_envs decorrelated rollouts instead of one long correlated
+  # trajectory. `episodes` stays the TOTAL budget: at num_envs=4 a 1000-episode
+  # run is 250 iterations of 4 episodes, so the sample budget is unchanged and
+  # runs stay comparable. `episodes` must be divisible by num_envs.
+  #
+  # Stepping is serial -- this buys sample decorrelation, not wall-clock speed,
+  # and per-step cost grows linearly with num_envs. Note that `n_steps` counts
+  # per-env timesteps, so the update batch is n_steps * num_envs: a run at
+  # num_envs=4 is not hyperparameter-identical to one at num_envs=1.
+  num_envs: 1
+
+  # Steps per episode.
+  ep_length: 600
+
+  # Live pygame window. Leave false for training; unrelated to video capture
+  # (see `logging.video_*`).
+  render: false
+
+  # Apple regrowth probabilities, by the number of apples still nearby:
+  #   slow = [0, .005, .02, .05]  (the reference repo's setting)
+  #   fast = [0, .01,  .05, .1 ]  (the paper's)
+  # Slower regrowth makes over-harvesting easier and the dilemma sharper.
+  spawn_speed: slow
+
+  # What the *environment* pays out. `Efficiency` gives the usual +1 per apple,
+  # per step. Any other value (`Efficiency*Peace`, `Efficiency*Peace*Equality`)
+  # zeroes every step reward and pays a single terminal reward equal to that
+  # product of social metrics -- an extremely sparse signal. Prefer shaping the
+  # reward with `reward_model` below.
+  metric: Efficiency
+
+  # true replaces the reward of any step where the agent used FIRE with -1,
+  # discouraging shooting.
+  penalty: false
+
+# ---------------------------------------------------------------------------
+# Algorithm
+#
+# Keys here must belong to the algorithm selected above: the schema is checked
+# at startup, so an `ippo` key under `algorithm=dqn` fails immediately instead
+# of being silently ignored. Swap this block wholesale when you swap learners
+# -- the alternatives are listed, commented out, after it.
+# ---------------------------------------------------------------------------
+
+algorithm:
+  # Must match `override /algorithm`. Do not rename.
+  name: ippo
+
+  # Adam step size for the policy and value networks.
+  learning_rate: 0.0003
+
+  # Discount factor. 0.99 over 600 steps is roughly a 100-step horizon.
+  gamma: 0.99
+
+  # GAE bias/variance trade-off. Lower is lower variance, more bias.
+  gae_lambda: 0.95
+
+  # PPO ratio clip. Smaller is a more conservative update.
+  clip_range: 0.2
+
+  # Exploration. `adaptive` tunes the coefficient to hold policy entropy at
+  # `target_entropy_frac * ln(num_actions)` -- 1.25 nats at 8 actions. It
+  # replaced a fixed schedule that could not do the job: in the 2026-08-13
+  # narrow_view run, entropy had collapsed to 0.64 nats while ent_coef was
+  # still 0.068, so no reachable floor would have bitten.
+  # `anneal` is the old linear ent_coef -> ent_coef_end schedule, kept so
+  # earlier runs stay reproducible. `fixed` holds ent_coef constant.
+  ent_coef_mode: adaptive    # adaptive | anneal | fixed
+  ent_coef: 0.1              # initial value (adaptive) / schedule start (anneal)
+  ent_coef_end: 0.01         # anneal only
+  target_entropy_frac: 0.6   # adaptive only
+  # adaptive only. Units are per minibatch, not per episode: observe_entropy
+  # fires once per minibatch, which at this file's rollout settings
+  # (n_steps=null so 600 per env, batch_size=128, update_epochs=2,
+  # ep_length=600) is about 10 calls per episode per agent -- not the thousands
+  # per episode the SAC convention this value is borrowed from assumes. Note
+  # this count scales with num_envs, since the batch does.
+  ent_coef_lr: 0.003         # adaptive only
+  ent_coef_min: 0.001        # adaptive only
+  ent_coef_max: 0.5          # adaptive only
+
+  # Weight of the value loss in the total loss.
+  vf_coef: 0.5
+
+  # Clips the value update around the old value. `null` disables it.
+  vf_clip: 10.0
+
+  # Timesteps collected per environment before each update, so the batch is
+  # n_steps * num_envs. Null aligns the update with the episode boundary --
+  # one update per episode per env, over ep_length * num_envs transitions --
+  # which is also when the reward model retrains by default.
+  #
+  # A value that does not divide ep_length leaves a short final batch every
+  # episode, because the buffer is flushed at the boundary: 512 against
+  # ep_length 600 updates on 512 transitions and then on 88, below the 128
+  # minibatch size.
+  n_steps: null
+
+  # Minibatch size within an update.
+  batch_size: 128
+
+  # Passes over each rollout. Higher risks off-policy drift.
+  update_epochs: 2
+
+  # Width of the policy/value MLP head.
+  hidden_size: 256
+
+  # Gradient-norm clip.
+  max_grad_norm: 0.5
+
+  # Scale observations from 0..255 to 0..1. The reward model is fed on the same
+  # scale, so this choice carries over to it -- keep it consistent across runs
+  # you intend to compare.
+  normalize_obs: true
+
+  # true feeds a flat vector to an MLP instead of the CNN's image.
+  flatten_obs: false
+
+  # auto | cpu | cuda | cuda:N
+  device: auto
+
+# The other learners. To use one, replace the block above with it and change
+# `override /algorithm` to match.
+#
+# algorithm:                 # MAPPO: PPO with a centralized critic.
+#   name: mappo
+#   learning_rate: 0.0003
+#   gamma: 0.99
+#   gae_lambda: 0.95
+#   clip_range: 0.2
+#   ent_coef_mode: adaptive  # Same three modes as IPPO, one shared controller.
+#   ent_coef: 0.1
+#   ent_coef_end: 0.01
+#   target_entropy_frac: 0.6
+#   ent_coef_lr: 0.003
+#   ent_coef_min: 0.001
+#   ent_coef_max: 0.5
+#   vf_coef: 0.5
+#   n_steps: 2048
+#   batch_size: 256
+#   update_epochs: 4
+#   hidden_size: 256
+#   max_grad_norm: 0.5
+#   normalize_obs: true
+#   flatten_obs: false
+#   device: auto
+#
+# algorithm:                 # DQN: off-policy, epsilon-greedy.
+#   name: dqn
+#   learning_rate: 0.001
+#   gamma: 0.99
+#   epsilon_start: 1.0       # Exploration rate at the first step...
+#   epsilon_end: 0.1         # ...its floor...
+#   epsilon_decay: 0.995     # ...multiplied by this each training step.
+#   batch_size: 32
+#   replay_buffer_size: 5000 # Transitions kept.
+#   train_after: 100         # Transitions to collect before the first update.
+#   train_every: 1           # Train once every N steps.
+#   target_update_freq: 200  # Copy online net -> target net every N updates.
+#   max_grad_norm: 10.0
+#   normalize_obs: true
+#   device: auto
+#
+# algorithm:                 # Uniform random actions: the baseline, and the
+#   name: random             # cheapest way to smoke-test a config or to
+#   normalize_obs: true      # collect preference data without a learner.
+#   device: auto
+
+# ---------------------------------------------------------------------------
+# Reward model
+#
+# Preference-based reward learning. An oracle ranks pairs of episodes by `phi`
+# (a product of social metrics), a model learns to score trajectories in that
+# order, and its per-step scores replace the environment reward for the policy.
+# Set `enabled: false` (or `override /reward_model: off`) to train on the raw
+# environment reward and ignore this whole block.
+# ---------------------------------------------------------------------------
+
+reward_model:
+  # false = train on the environment reward only.
+  enabled: true
+
+  # How an episode becomes one sequence to score:
+  #   narrow_view       = one randomly sampled agent's trajectory
+  #                       (per-agent credit)
+  #   input_aggregation = every agent's trajectory concatenated
+  #                       (joint credit)
+  mode: narrow_view
+
+  # The oracle's preference criterion, and usually the experiment's real
+  # independent variable -- it appears in the run directory name. One of:
+  #   efficiency
+  #   efficiency_x_peace
+  #   efficiency_x_equality
+  #   efficiency_x_sustainability
+  #   equality_x_peace
+  #   efficiency_x_peace_x_equality
+  #   efficiency_x_peace_x_equality_x_sustainability
+  phi: efficiency_x_peace
+
+  # Adam step size for the reward model.
+  lr: 0.0001
+
+  # Episode pairs per training step.
+  batch_pairs: 64
+
+  # Gradient steps taken each time the model updates.
+  train_steps_per_update: 50
+
+  # Env steps between updates. Null trains once at every episode end, the
+  # same cadence the policies use when `n_steps` is null. An integer keeps a
+  # step-denominated period, caught up one period at a time so the rate does
+  # not depend on num_envs.
+  update_every_env_steps: null
+
+  # Episodes collected before the first update, so the buffer holds something
+  # to compare against.
+  warmup_episodes: 50
+
+  # Preference buffer capacity, in episodes.
+  max_episodes_in_buffer: 5000
+
+  # Checkpoint interval for reward_model.pt.
+  save_every_episodes: 200
+
+  # auto | cpu | cuda | cuda:N
+  device: auto
+
+  # --- Optimisation. The defaults are usually right; listed to be findable. ---
+
+  # Adam weight decay.
+  weight_decay: 0.0001
+
+  # Gradient-norm clip. `null` or 0 disables clipping.
+  max_grad_norm: 1.0
+
+  # Pairs are weighted by softmax(delta / (std + tau)), so a clearer phi gap
+  # counts for more. This is tau; larger flattens toward uniform weighting.
+  delta_temperature: 1.0
+
+  # |phi_i - phi_j| <= this is labelled a tie (0.5) rather than a hard
+  # preference. Raise it when many episodes score identically -- e.g.
+  # efficiency 0 for whole batches early in training.
+  tie_tolerance: 0.0
+
+  # --- Performance and memory. The buffer, not the model, is usually the ---
+  # --- binding constraint; see PreferenceBuffer's docstring.              ---
+
+  # Mixed-precision (FP16) forward/backward on CUDA.
+  use_amp: true
+
+  # Max steps per forward pass. Lower means lower peak memory.
+  chunk_size: 512
+
+  # Recompute chunk activations in the backward pass: slower, but cuts
+  # activation memory.
+  grad_checkpoint: false
+
+  # Subsample a scored sequence to this many steps. `null` scores the whole
+  # episode.
+  max_steps_per_sequence: 256
+
+  # Cap the steps kept per agent at insertion time. `null` stores the full
+  # episode; set this when the buffer, not the GPU, is what runs out.
+  store_max_steps_per_agent: null
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+logging:
+  # Root directory for all run directories.
+  log_dir: logs
+
+  # Names the directory that *groups* this experiment's runs; repeats still
+  # nest inside it as `<timestamp>-seed=N`. Left null, the group name is
+  # derived from the configuration itself, e.g.
+  # `ippo-map=medium-agents=5-rm=narrow_view-phi=efficiency_x_peace`. Set it to
+  # give a named experiment a folder of its own.
+  run_name: null
+
+  # Leave null. The Hydra entry point fills this in with the run's own
+  # directory, which is what keeps the artifacts beside Hydra's `.hydra/`
+  # snapshot and job log.
+  run_dir: null
+
+  # Write a metrics.jsonl row every N episodes.
+  log_interval: 1
+
+  # Record episode videos at all.
+  video_enabled: true
+
+  # ...one every N episodes (the final episode is always recorded).
+  video_every_n_episodes: 500
+
+  # Cap frames per video.
+  video_max_steps: 600
+
+  # Playback rate of the written mp4.
+  video_fps: 10
+
+  # Keep the individual PNG frames after encoding.
+  video_keep_frames: false
+
+  # Per-agent, per-step CSVs under extended_info/. Verbose, and what
+  # `commons-game plot run` reads for its per-agent plots.
+  log_agent_episode_details: true

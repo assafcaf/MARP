@@ -6,11 +6,14 @@ import numpy as np
 import pytest
 from unittest.mock import Mock
 from commons_game_marp.train.metrics import (
+    count_apples_around,
     count_nearby_apples,
     check_ate_last_apple_in_cluster,
     compute_agent_step_metrics,
+    disc_offsets,
 )
-from commons_game_marp.env.commons_env import APPLE_RADIUS
+from commons_game_marp.env.commons_env import APPLE_RADIUS, OUTCAST_POSITION
+from commons_game_marp.env.utils.utility_funcs import return_view
 
 
 class TestCountNearbyApples:
@@ -72,6 +75,56 @@ class TestCountNearbyApples:
         # (0,4): dist = sqrt(1^2 + 2^2) = sqrt(5) ≈ 2.24 > 2 (outside)
         # (2,1): dist = sqrt(1^2 + 1^2) = sqrt(2) ≈ 1.41 <= 2 (inside)
         assert count == 1
+
+
+class TestCountApplesAround:
+    """`count_apples_around` is the vectorised replacement for the view scan."""
+
+    def test_matches_count_nearby_apples_on_random_maps(self):
+        """The two must agree everywhere, including off the edge of the map.
+
+        This is the contract that lets the trainer run the count for every
+        agent of every environment instead of only environment 0.
+        """
+        rng = np.random.default_rng(0)
+        view_range = 7
+        offsets = disc_offsets(2)
+        for _ in range(200):
+            grid = rng.choice(
+                np.array([' ', 'A', '@', '1'], dtype='<U1'),
+                size=(rng.integers(6, 20), rng.integers(6, 20)),
+                p=[0.5, 0.3, 0.1, 0.1],
+            )
+            # Positions deliberately reach outside the map, the way an agent
+            # near a wall does.
+            pos = [
+                int(rng.integers(-3, grid.shape[0] + 3)),
+                int(rng.integers(-3, grid.shape[1] + 3)),
+            ]
+            view = return_view(grid, pos, view_range, view_range)
+            expected = count_nearby_apples(view, view_range, view_range, radius=2)
+            assert count_apples_around(grid, pos, offsets) == expected
+
+    def test_outcast_agent_counts_zero(self):
+        """An agent in timeout sits off-map and must count no apples."""
+        grid = np.full((10, 10), 'A', dtype='<U1')
+        pos = [OUTCAST_POSITION, OUTCAST_POSITION]
+        assert count_apples_around(grid, pos, disc_offsets(2)) == 0
+
+    def test_counts_apple_on_own_cell(self):
+        grid = np.full((5, 5), ' ', dtype='<U1')
+        grid[2, 2] = 'A'
+        assert count_apples_around(grid, [2, 2], disc_offsets(2)) == 1
+
+    def test_offsets_form_a_disc(self):
+        offsets = disc_offsets(2)
+        # 13 cells: the 3x3 block plus the four cells at distance exactly 2.
+        assert offsets.shape == (13, 2)
+        assert np.all((offsets**2).sum(axis=1) <= 4)
+
+    def test_offsets_are_cached_per_radius(self):
+        assert disc_offsets(2) is disc_offsets(2)
+        assert disc_offsets(3).shape[0] > disc_offsets(2).shape[0]
 
 
 class TestCheckAteLastAppleInCluster:

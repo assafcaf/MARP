@@ -1,0 +1,16 @@
+# @package _global_
+# The narrow-view arm on its own -- one agent's trajectory is scored per
+# episode. Sweep the seeds:
+#   uv run commons-game train -m +experiment=sequence_narrow_view seed=0,1,2,3,4
+#
+# Everything the two arms share -- env=medium, algorithm=ippo, episodes and
+# `reward_model.phi` -- is inherited from sequence_narrow_vs_input_agg, so the
+# arms cannot drift apart from each other or from the comparison run. Only the
+# reward-model mode is set here.
+defaults:
+  - sequence_narrow_vs_input_agg
+  - override /reward_model: narrow_view
+episodes: 5000
+seed: 0
+reward_model:
+  phi: efficiency

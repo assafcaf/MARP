@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from ...env.vec_env import agents_to_rows, rows_to_agents
 from .base import Algorithm
 
 
@@ -131,12 +132,16 @@ class DQNAlgorithm(Algorithm):
         super().__init__(config)
         self.agents: Dict[str, DQNAgent] = {}
         self.last_losses: Dict[str, float] = {}
+        self.agent_ids: List[str] = []
+        self.num_envs = 1
 
     def on_env_ready(self, env) -> None:
         obs_space = env.observation_space["curr_obs"]
         obs_shape = obs_space.shape
         num_actions = int(env.action_space.n)
-        for agent_id in env.agents.keys():
+        self.agent_ids = list(env.agent_ids)
+        self.num_envs = int(env.num_envs)
+        for agent_id in self.agent_ids:
             self.agents[agent_id] = DQNAgent(
                 obs_shape=obs_shape,
                 num_actions=num_actions,
@@ -154,37 +159,56 @@ class DQNAlgorithm(Algorithm):
                 device=self.config.device,
             )
 
-    def _format_obs(self, obs: Dict[str, Any], agent_id: str) -> np.ndarray:
-        img = obs[agent_id]["curr_obs"]
+    def _format_obs(self, obs_batch: np.ndarray) -> np.ndarray:
+        """(num_envs, ...) uint8 rows -> float32, scaled as configured."""
+        img = obs_batch.astype(np.float32)
         if self.config.normalize_obs:
-            return (img / 255.0).astype(np.float32)
-        return img.astype(np.float32)
+            img = img / 255.0
+        return img
 
-    def act(self, observations: Dict[str, Any], step: int) -> Dict[str, int]:
+    def act(self, observations: np.ndarray, step: int) -> np.ndarray:
+        per_agent = rows_to_agents(observations, self.num_envs, self.agent_ids)
         actions = {}
         for agent_id, agent in self.agents.items():
-            obs = self._format_obs(observations, agent_id)
-            actions[agent_id] = agent.act(obs, training=True)
-        return actions
+            obs_batch = self._format_obs(per_agent[agent_id])
+            actions[agent_id] = np.array(
+                [agent.act(obs_batch[e], training=True) for e in range(self.num_envs)],
+                dtype=np.int64,
+            )
+        return agents_to_rows(actions, self.num_envs, self.agent_ids)
 
     def observe(
         self,
-        observations: Dict[str, Any],
-        actions: Dict[str, int],
-        rewards: Dict[str, float],
-        next_observations: Dict[str, Any],
-        dones: Dict[str, bool],
-        infos: Dict[str, Any],
+        observations: np.ndarray,
+        actions: np.ndarray,
+        rewards: np.ndarray,
+        next_observations: np.ndarray,
+        dones: np.ndarray,
+        infos: List[Dict[str, Any]],
         step: int,
     ) -> None:
+        obs_by_agent = rows_to_agents(observations, self.num_envs, self.agent_ids)
+        next_by_agent = rows_to_agents(next_observations, self.num_envs, self.agent_ids)
+        act_by_agent = rows_to_agents(actions, self.num_envs, self.agent_ids)
+        rew_by_agent = rows_to_agents(rewards, self.num_envs, self.agent_ids)
+        done_by_agent = rows_to_agents(dones, self.num_envs, self.agent_ids)
+
         for agent_id, agent in self.agents.items():
-            obs = self._format_obs(observations, agent_id)
-            next_obs = self._format_obs(next_observations, agent_id)
-            done = bool(dones.get(agent_id, False))
-            agent.remember(obs, actions[agent_id], rewards[agent_id], next_obs, done)
-            loss_info = agent.train_step()
-            if loss_info.get("loss") is not None:
-                self.last_losses[agent_id] = loss_info["loss"]
+            obs_batch = self._format_obs(obs_by_agent[agent_id])
+            next_batch = self._format_obs(next_by_agent[agent_id])
+            # One transition per environment: the replay buffer takes all
+            # num_envs of them, which is the whole benefit DQN gets here.
+            for e in range(self.num_envs):
+                agent.remember(
+                    obs_batch[e],
+                    int(act_by_agent[agent_id][e]),
+                    float(rew_by_agent[agent_id][e]),
+                    next_batch[e],
+                    bool(done_by_agent[agent_id][e]),
+                )
+                loss_info = agent.train_step()
+                if loss_info.get("loss") is not None:
+                    self.last_losses[agent_id] = loss_info["loss"]
 
     def on_episode_end(self, episode: int) -> Dict[str, Any]:
         for agent in self.agents.values():

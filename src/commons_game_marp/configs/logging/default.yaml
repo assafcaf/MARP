@@ -3,10 +3,19 @@ defaults:
 
 log_dir: logs
 run_name: null
+run_dir: null
 log_interval: 1
+console: auto
+status_every: 10
 video_enabled: true
 video_every_n_episodes: 100
 video_max_steps: 600
 video_fps: 10
 video_keep_frames: false
 log_agent_episode_details: true
+
+# Behavioural and reward-model diagnostics. See docs/metrics.md for the tag
+# catalog; detailed_metrics: false restores the pre-existing tag set.
+detailed_metrics: true
+nearby_apple_radius: 2
+histogram_every_n_episodes: 0

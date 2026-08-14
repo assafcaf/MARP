@@ -760,9 +760,10 @@ def generate_run_plots(
     return rewards_plotted, social_plotted
 
 
-def main() -> int:
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate reward and social metric plots from a run folder."
+        prog="commons-game plot run",
+        description="Generate reward and social metric plots from a run folder.",
     )
     parser.add_argument(
         "run_dir",
@@ -789,8 +790,10 @@ def main() -> int:
         action="store_true",
         help="Generate individual plot files for each social metric instead of a combined subplot.",
     )
-    args = parser.parse_args()
+    return parser
 
+
+def run(args: argparse.Namespace) -> int:
     path = args.run_dir
     if os.path.isfile(path):
         run_dir = os.path.dirname(path)
@@ -845,4 +848,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(run(build_parser().parse_args()))

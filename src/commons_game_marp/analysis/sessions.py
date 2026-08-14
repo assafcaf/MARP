@@ -8,7 +8,6 @@ Process all experiment sessions:
 
 import argparse
 import os
-import sys
 import json
 import csv
 import math
@@ -19,11 +18,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-# Add scripts directory to path
-script_dir = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, script_dir)
-
-from plot_multiple_runs import plot_multiple_runs, PUBLICATION_COLORS, _format_label
+from .multiple_runs import plot_multiple_runs, PUBLICATION_COLORS, _format_label
 
 # Publication-quality settings
 plt.rcParams.update({
@@ -1883,33 +1878,34 @@ def process_session(
         print(f"  [--] No granular condition data found")
 
 
-def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments."""
+def build_parser() -> argparse.ArgumentParser:
+    """Build the argument parser for the `sessions` subcommand."""
     parser = argparse.ArgumentParser(
+        prog="commons-game sessions",
         description="Process experiment sessions and generate comparison plots.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   # Run everything for MAPPO (default)
-  python scripts/process_all_sessions.py
+  commons-game sessions
 
   # Run everything for IPPO
-  python scripts/process_all_sessions.py --algorithm ippo
+  commons-game sessions --algorithm ippo
 
   # Run ONLY cross-session comparisons (skip per-session plots)
-  python scripts/process_all_sessions.py --comparisons-only
+  commons-game sessions --comparisons-only
 
   # Run ONLY per-session plots (skip comparisons)
-  python scripts/process_all_sessions.py --skip-comparisons
+  commons-game sessions --skip-comparisons
 
   # Generate plots without titles
-  python scripts/process_all_sessions.py --no-title
+  commons-game sessions --no-title
 
   # IPPO with comparisons only
-  python scripts/process_all_sessions.py --algorithm ippo --comparisons-only
+  commons-game sessions --algorithm ippo --comparisons-only
         """
     )
-    
+
     parser.add_argument(
         "--algorithm",
         "-a",
@@ -1919,39 +1915,44 @@ Examples:
         help="Algorithm to process (default: mappo)"
     )
     
-    parser.add_argument(
+    # argparse enforces the exclusion natively, replacing a hand-rolled
+    # parser.error() check. Same behavior: message to stderr, exit code 2.
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
         "--comparisons-only",
         action="store_true",
         help="Generate only cross-session comparison plots (skip per-session plots)"
     )
-    
-    parser.add_argument(
+    mode.add_argument(
         "--skip-comparisons",
         action="store_true",
         help="Skip cross-session comparison plots (only generate per-session plots)"
     )
-    
+
     parser.add_argument(
         "--no-title",
         action="store_true",
         help="Hide titles from all plots."
     )
-    
-    args = parser.parse_args()
-    
-    # Validate mutually exclusive options
-    if args.comparisons_only and args.skip_comparisons:
-        parser.error("--comparisons-only and --skip-comparisons are mutually exclusive")
-    
-    return args
+
+    parser.add_argument(
+        "--base-dir",
+        type=str,
+        default=None,
+        help="Project root that 'logs/' and session run paths resolve against "
+             "(default: the current working directory).",
+    )
+
+    return parser
 
 
-def main():
-    args = parse_args()
-    
-    # Get the base directory (project root)
-    base_dir = os.path.dirname(script_dir)
-    
+def run(args: argparse.Namespace) -> int:
+    # Session run paths and the 'logs/' tree are relative to the project root.
+    # This used to be derived from the script's own location back when this
+    # module lived in scripts/; as an installed package that no longer points
+    # anywhere useful, so it defaults to the working directory instead.
+    base_dir = args.base_dir if args.base_dir is not None else os.getcwd()
+
     # Determine show_title from arguments
     show_title = not args.no_title
     
@@ -2009,4 +2010,4 @@ def main():
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(run(build_parser().parse_args()))

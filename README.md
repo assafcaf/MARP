@@ -12,7 +12,8 @@ Key pieces:
 - `src/commons_game_marp/env/maps.py`: ASCII map layouts used for spawning walls/apples/agents.
 - `src/commons_game_marp/reward_model/`: MARP-style preference-based reward model and training utilities.
 - `src/commons_game_marp/train/metrics.py`: Agent-specific metrics calculation (nearby apples, cluster detection).
-- `scripts/plot_phi_comparisons.py`: Phi comparison plots and NV vs IA social metrics galleries.
+- `src/commons_game_marp/analysis/`: Plotting and cross-session analysis commands.
+- `src/commons_game_marp/cli.py`: The `commons-game` command.
 
 ## Installation
 
@@ -33,9 +34,28 @@ effect without reinstalling.
 Prefix commands with `uv run` to use the project environment:
 
 ```bash
-uv run pytest              # run the test suite
-uv run python main.py      # run training
+uv run pytest                    # run the test suite
+uv run commons-game --help       # see all commands
 ```
+
+## The `commons-game` command
+
+Everything runs through one command:
+
+| Command | Does |
+|---|---|
+| `commons-game train` | Train agents (Hydra — see [Training](#training)) |
+| `commons-game plot run <run-dir>` | Plot reward and social metrics for one run |
+| `commons-game plot runs <run-dirs>` | Plot averaged metrics with std dev across runs |
+| `commons-game plot phi` | Phi comparison plots and NV vs IA galleries |
+| `commons-game compare-modes` | Compare narrow-view against input-aggregation runs |
+| `commons-game sessions` | Process sessions and generate cross-session plots |
+| `commons-game tensorboard` | Launch TensorBoard on a log directory |
+
+Run `commons-game <command> --help` for a command's options.
+
+`commons-game-train` and `uv run python main.py` remain as aliases for the
+training path.
 
 ### PyTorch and CUDA
 
@@ -49,21 +69,21 @@ version, change the `torch` pin and the `[[tool.uv.index]]` URL, then re-run
 Training is configured with [Hydra](https://hydra.cc/). Run with defaults:
 
 ```bash
-uv run commons-game-train
+uv run commons-game train
 ```
 
 Override any value from the command line:
 
 ```bash
-uv run commons-game-train algorithm=ippo env=medium episodes=300 seed=7
-uv run commons-game-train reward_model=off env.penalty=true
-uv run commons-game-train algorithm=mappo algorithm.learning_rate=1e-4
+uv run commons-game train algorithm=ippo env=medium episodes=300 seed=7
+uv run commons-game train reward_model=off env.penalty=true
+uv run commons-game train algorithm=mappo algorithm.learning_rate=1e-4
 ```
 
 Print the composed config without training:
 
 ```bash
-uv run commons-game-train --cfg job
+uv run commons-game train --cfg job
 ```
 
 `uv run python main.py` is equivalent — `main.py` is a two-line shim over the
@@ -88,9 +108,31 @@ directly.
 Named combinations live in `configs/experiment/` and are selected with a `+`:
 
 ```bash
-uv run commons-game-train +experiment=mappo
-uv run commons-game-train +experiment=ippo episodes=500
+uv run commons-game train +experiment=mappo
+uv run commons-game train +experiment=ippo episodes=500
+uv run commons-game train +experiment=baseline          # no reward model
 ```
+
+`baseline` is the control arm for the reward-model experiments: policies learn
+from environment rewards, with everything else inherited from
+`sequence_narrow_vs_input_agg` so it cannot drift from the arms it is compared
+against. Runs land in `logs/ippo-map=medium-agents=5-rm=off/`. Swap the learner
+with `algorithm=mappo` on the command line.
+
+To write a new one, copy the annotated template
+[`configs/experiment/example.yaml`](src/commons_game_marp/configs/experiment/example.yaml).
+It spells out every value in every group — what it does, its default, and the
+values it accepts — and is runnable as-is:
+
+```bash
+uv run commons-game train +experiment=example            # run the template
+cp src/commons_game_marp/configs/experiment/example.yaml \
+   src/commons_game_marp/configs/experiment/my_run.yaml  # then edit it
+uv run commons-game train +experiment=my_run --cfg job   # check before running
+```
+
+Keep only the keys you actually change; anything omitted falls back to the
+group defaults selected under `defaults:`.
 
 ### Sweeps
 
@@ -99,25 +141,59 @@ sequentially:
 
 ```bash
 # Three algorithms x three seeds = 9 runs
-uv run commons-game-train -m algorithm=dqn,ippo,mappo seed=0,1,2
+uv run commons-game train -m algorithm=dqn,ippo,mappo seed=0,1,2
 
 # Sweep a hyperparameter
-uv run commons-game-train -m algorithm=ippo algorithm.learning_rate=1e-3,3e-4,1e-4
+uv run commons-game train -m algorithm=ippo algorithm.learning_rate=1e-3,3e-4,1e-4
 
 # Compare reward-model modes across five seeds
-uv run commons-game-train -m +experiment=sequence_narrow_vs_input_agg \
+uv run commons-game train -m +experiment=sequence_narrow_vs_input_agg \
     reward_model=narrow_view,input_aggregation seed=0,1,2,3,4
 ```
 
-Multirun output is grouped under `logs/hydra/multirun/<timestamp>/`.
+Sweep jobs use the same layout as single runs (see below): a sweep over seeds
+fills one configuration directory with sibling runs, while a sweep over
+`algorithm`, `env` or `reward_model` splits into separate configuration
+directories. Hydra also drops a `multirun.yaml` summary at the root of `logs/`.
 
 ### Outputs
 
-Logs are written to `logs/<run-name>/metrics.jsonl` and `logs/<run-name>/config.yaml`.
-Videos are written to `logs/<run-name>/videos/episode=XXXX.mp4`.
-TensorBoard logs are written to `logs/<run-name>/tensorboard/`.
-Extended agent episode information is written to `logs/<run-name>/extended_info/agent_X_episodes.csv`.
-Run folders include a reward-model suffix, e.g. `...-rm=off` or `...-rm=narrow_view`.
+Every run gets **one** directory, holding both Hydra's own output and the
+training artifacts. Runs are grouped by configuration, so all repeats of one
+setup sit side by side:
+
+```
+logs/
+  mappo-map=small-agents=5-rm=narrow_view-phi=efficiency_x_peace/   <- configuration
+    20260813-092316-seed=0/                                         <- one run
+      .hydra/{config,overrides,hydra}.yaml   composed config and CLI overrides
+      train_cli.log                          Hydra job log
+      run_info.json                          command, git commit, host, seed, versions
+      config.yaml                            resolved config (incl. a drawn seed)
+      metrics.jsonl                          per-episode metrics
+      tensorboard/                           TensorBoard event files
+      videos/episode=XXXX.mp4
+      extended_info/agent_X_episodes.csv
+      model_last.pt, reward_model_last.pt
+    20260813-092316-seed=1/
+    20260901-141207-seed=2/
+```
+
+The configuration directory names the algorithm, map, agent count and
+reward-model mode (plus phi when the reward model is on), followed by any other
+CLI override that the name does not already spell out -- so
+`-m algorithm.learning_rate=1e-3,1e-4` still lands in two distinct directories.
+Overrides under `logging.` never split a configuration. All repeats of one
+configuration are gathered with a single glob:
+
+```bash
+uv run commons-game plot runs logs/<configuration>/*
+```
+
+Set `logging.run_name=<name>` to replace the derived configuration directory
+with your own; repeats still nest inside it. A null `seed` is drawn at startup,
+after the directory name is fixed, so it is left out of the name -- the drawn
+value is in `config.yaml` and `run_info.json`.
 
 **Detailed agent episode logs:** When `logging.log_agent_episode_details` is enabled (default: `true`), separate CSV files are created for each agent in the `extended_info/` subdirectory (e.g., `extended_info/agent_0_episodes.csv`, `extended_info/agent_1_episodes.csv`). Each row in the CSV represents one step within an episode, with the following columns:
 - `episode`: Episode number
@@ -125,7 +201,8 @@ Run folders include a reward-model suffix, e.g. `...-rm=off` or `...-rm=narrow_v
 - `action`: Action taken by the agent
 - `reward`: Reward received for this step
 - `predicted_reward`: Predicted reward for this step (only if reward model enabled)
-- `apple_eaten`: Boolean indicating whether an apple was consumed in the current step (True if reward > 0)
+- `env_reward`: Unpenalised environment reward for this step (differs from `reward` when `env.penalty` is on)
+- `apple_eaten`: Boolean indicating whether an apple was consumed in the current step (True if the unpenalised reward > 0)
 - `nearby_apples`: Integer count of apples within 2 steps (Euclidean distance) from the agent's position. This metric only counts apples that are actually nearby, not all apples in the agent's full view range.
 - `ate_last_apple_in_cluster`: Boolean indicating whether the agent consumed the last remaining apple in a cluster (a resource that will not reproduce). This is True when an apple is eaten and no other apples remain within the spawn radius (APPLE_RADIUS=2) of the nearest apple spawn point.
 
@@ -135,13 +212,45 @@ View TensorBoard (live during training):
 tensorboard --logdir logs
 ```
 
+**[docs/metrics.md](docs/metrics.md) is the full tag catalog** -- what every
+scalar means and what to read it for. Beyond the returns and social metrics, a
+run logs the action distribution (`action/*`), how the commons was used
+(`harvest/*` -- harvest rate, apples in proximity, and the fraction of harvests
+that emptied a cluster), the reward model's step-level behaviour (`rm_*` -- what
+it pays per action, on harvest versus not, and by local apple density), and
+throughput (`time/*`).
+
+Turn the extra families off with `logging.detailed_metrics=false`; they cost
+about 0.4% of wall time. Distribution histograms are off by default --
+`logging.histogram_every_n_episodes=50` enables them.
+
+### Console output
+
+Training announces each phase it enters -- setup, reward model configuration,
+the end of the preference warmup, checkpoints, and a closing summary -- and
+reports episode progress as it goes.
+
+How progress is reported depends on where the output goes. On a terminal it is
+a live progress bar carrying the current reward and social metrics; when the
+stream is redirected (`nohup`, a Hydra multirun, a pipe) it becomes a periodic
+status line instead, because a progress bar redrawing itself into a log file
+writes thousands of unreadable lines.
+
+- `logging.console=auto` (default) picks between the two by asking whether the
+  stream is a terminal.
+- `logging.console=bar` / `logging.console=plain` force one of them.
+- `logging.console=quiet` silences all console output; metrics still go to
+  `metrics.jsonl` and TensorBoard.
+- `logging.status_every=10` (default) sets how many episodes pass between
+  status lines when no bar is shown. The final episode always reports.
+
 Config tips (each is a command-line override, e.g. `logging.video_enabled=false`):
 - `logging.video_every_n_episodes` defaults to 100; reduce it to record more frequently.
 - `logging.video_max_steps` caps episode length in videos.
 - `logging.video_enabled=false` disables video capture for faster training.
 - `logging.log_agent_episode_details=true` (default) enables detailed per-agent episode logging to separate files.
 - The last episode is always recorded (if video is enabled), regardless of `video_every_n_episodes`.
-- Ready-made combinations: `+experiment=dqn`, `+experiment=ippo`, `+experiment=mappo`.
+- Ready-made combinations: `+experiment=baseline` (no reward model), `+experiment=dqn`, `+experiment=ippo`, `+experiment=mappo`.
 
 ## Algorithms
 
@@ -149,7 +258,7 @@ Select the learner with the `algorithm` group. Supported values: `dqn`,
 `random`, `ippo`, `mappo`.
 
 ```bash
-uv run commons-game-train algorithm=ippo
+uv run commons-game train algorithm=ippo
 ```
 
 - **DQN**: Deep Q-Network for single or multi-agent (independent learners).
@@ -172,8 +281,8 @@ Key mechanics:
 Enable it by selecting a `reward_model` group value (`off` is the default):
 
 ```bash
-uv run commons-game-train reward_model=narrow_view
-uv run commons-game-train reward_model=input_aggregation reward_model.phi=efficiency_x_equality
+uv run commons-game train reward_model=narrow_view
+uv run commons-game train reward_model=input_aggregation reward_model.phi=efficiency_x_equality
 ```
 
 The `narrow_view` and `input_aggregation` presets set:
@@ -192,9 +301,18 @@ device: auto
 save_every_episodes: 200
 ```
 
-`use_amp`, `chunk_size`, and `max_steps_per_sequence` take their schema defaults
-(`true`, `512`, `256`) and are overridable the same way, e.g.
+The optimisation and performance keys take their schema defaults (see the two
+tables below) and are overridable the same way, e.g.
 `reward_model.chunk_size=256`.
+
+### Optimisation options
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `weight_decay` | `1e-4` | Adam weight decay, matching the reference MARP predictor. |
+| `max_grad_norm` | `1.0` | Gradient-norm clipping. A sequence score sums hundreds of unbounded per-step rewards, so its gradients are heavy-tailed. Set to `null` or `0` to disable. Under AMP the gradients are unscaled before clipping, so the threshold is in true units. |
+| `delta_temperature` | `1.0` | Temperature `tau` in the preference-magnitude weighting `softmax(delta / (std(delta) + tau))`. `1.0` reproduces the reference implementation. Small values make the weighting collapse onto the largest-delta pairs — watch `reward_model/effective_pairs` if you lower it. |
+| `tie_tolerance` | `0.0` | `abs(phi_i - phi_j) <= tie_tolerance` counts as a tie and is labelled `mu = 0.5` (no preference) instead of being forced to one side. |
 
 ### Available phi functions
 
@@ -217,13 +335,26 @@ The reward model training supports several performance optimizations for memory-
 | Option | Default | Description |
 |--------|---------|-------------|
 | `use_amp` | `true` | Use mixed precision (FP16) training. Halves GPU memory usage and speeds up training on compatible GPUs. Automatically disabled on CPU. |
-| `chunk_size` | `512` | Maximum number of steps per forward pass chunk. Larger values are faster but use more memory. Reduce if encountering OOM errors. |
+| `chunk_size` | `512` | Maximum number of steps per forward pass chunk. Larger values are faster but use more memory. Reduce if encountering OOM errors. Note that without `grad_checkpoint` this bounds *inference* memory only — see below. |
+| `grad_checkpoint` | `false` | Recompute each chunk's activations during backward instead of keeping them. This is what makes `chunk_size` bound *training* memory: without it every chunk holds its activation graph until `.backward()`, so peak memory tracks the full sequence no matter how small the chunks are. Measured on a 64x256-step `input_aggregation` batch: **1.55 GB peak → 0.11 GB**, at ~1.7x the step time. |
 | `max_steps_per_sequence` | `256` | Temporal subsampling limit. Limits the number of steps per trajectory using uniform spacing. Set to `null` to disable subsampling (process all steps). |
+| `store_max_steps_per_agent` | `null` | Subsample each agent's trajectory when it is *inserted* into the preference buffer, rather than keeping it at full resolution and subsampling at every training step. This is the knob that bounds host RAM, and `max_steps_per_sequence` is not — see below. |
 
-**Memory usage tips:**
+**GPU memory tips:**
 - For 8GB GPU: Use defaults (`max_steps_per_sequence: 256`, `chunk_size: 512`, `use_amp: true`)
-- For 4GB GPU: Try `max_steps_per_sequence: 128`, `chunk_size: 256`
+- For 4GB GPU: Try `max_steps_per_sequence: 128`, `chunk_size: 256`, `grad_checkpoint: true`
 - For larger GPUs: Increase `max_steps_per_sequence` to `512` or `null` for full precision
+
+**Host RAM — the preference buffer:** the buffer holds every step of every
+agent for `max_episodes_in_buffer` episodes. At the default 5000 episodes with
+600-step episodes, 5 agents and 15x15x3 frames that is 15M frames, i.e. **~10 GB**
+(observations are stored as `uint8`; they were previously widened to `float32`
+on the way in, which made the same buffer ~40 GB and OOMed long before it
+filled). `max_steps_per_sequence` does not help here — it only trims what is
+read out at training time. To bound residency, either lower
+`max_episodes_in_buffer` or set `store_max_steps_per_agent` (e.g. `256`, which
+cuts the above to ~4 GB and matches what training would have subsampled to
+anyway).
 
 **Mode comparison:**
 - `input_aggregation`: Aggregates trajectories from ALL agents (higher memory, captures global patterns)
@@ -232,22 +363,29 @@ The reward model training supports several performance optimizations for memory-
 Logging:
 - `reward_pred_*` tracks predicted rewards when RM is enabled.
 - `reward_env_*` tracks environment rewards.
-- `reward_model/*` in TensorBoard shows RM loss/accuracy/correlation.
+- `reward_model/*` in TensorBoard shows RM loss/accuracy/correlation:
+  - `loss`, `pref_accuracy` — accuracy is computed over *decisive* pairs only; tied pairs carry no ground truth to be right about.
+  - `tie_fraction` — share of pairs with `phi_i == phi_j`. Near 1.0 means the oracle cannot separate the current episodes at all (typical during warmup, when every episode scores `efficiency = 0`) and the update is mostly a no-op.
+  - `effective_pairs` — `1 / sum(w^2)` for the magnitude weights: how many of the `batch_pairs` the weighted loss actually used. Should sit close to `batch_pairs`; a low value means `delta_temperature` is too small for the current delta spread.
+  - `grad_norm` — mean pre-clip gradient norm over steps with finite gradients.
+  - `grad_overflow_rate` — share of steps the AMP loss scaler skipped for overflow. A few at the start of a run is the scaler finding its scale; a persistently high value means AMP is hurting and `use_amp: false` is worth trying.
+  - `score_phi_corr` — Pearson correlation between episode scores and phi, reported only once at least 4 distinct episodes are in the batch (a 2-point correlation is +-1 by construction).
+- `rm_*` in TensorBoard is the *step-level* view of the same model, and it can disagree with the pair-level one above — a falling loss is compatible with a per-step reward that stays flat. `rm_outcome/separation` is the headline number: how many pooled standard deviations separate a harvest from a non-harvest in the model's eyes. See [docs/metrics.md](docs/metrics.md).
 
 Checkpoints:
-- All algorithms: `logs/<run>/model_last.pt`, `logs/<run>/reward_model_last.pt`
+- All algorithms: `logs/<config>/<run>/model_last.pt`, `logs/<config>/<run>/reward_model_last.pt`
 
 ## Plotting run metrics
 
 Generate reward and social-metric plots from a run folder (expects `metrics.jsonl`):
 
 ```bash
-python scripts/plot_run_metrics.py logs/<run-name>
+uv run commons-game plot run logs/<configuration>/<run>
 ```
 
 Outputs:
-- `logs/<run-name>/plots/rewards.png`
-- `logs/<run-name>/plots/social_metrics.png`
+- `logs/<configuration>/<run>/plots/rewards.png`
+- `logs/<configuration>/<run>/plots/social_metrics.png`
 
 Options:
 - `--smooth N`: moving average window (episodes); also adds a faded ±1 std band.
@@ -260,12 +398,18 @@ Options:
 Generate averaged plots with standard deviation across multiple runs:
 
 ```bash
-python scripts/plot_multiple_runs.py logs/<run1> logs/<run2> logs/<run3> ...
+uv run commons-game plot runs logs/<configuration>/<run1> logs/<configuration>/<run2> ...
 ```
 
 Example:
 ```bash
-python scripts/plot_multiple_runs.py logs/20251231-224618-mappo-map=small-agents=5-rm=narrow_view-seed=1814091097 logs/20251231-234319-mappo-map=small-agents=5-rm=narrow_view-seed=1942310406 logs/20260101-004021-mappo-map=small-agents=5-rm=narrow_view-seed=1364072973
+# Every seed of one configuration:
+uv run commons-game plot runs logs/mappo-map=small-agents=5-rm=narrow_view-phi=efficiency_x_peace/*
+
+# Or name the runs explicitly:
+uv run commons-game plot runs \
+    logs/mappo-map=small-agents=5-rm=narrow_view-phi=efficiency_x_peace/20260813-092316-seed=0 \
+    logs/mappo-map=small-agents=5-rm=narrow_view-phi=efficiency_x_peace/20260813-092316-seed=1
 ```
 
 Outputs:
@@ -297,7 +441,7 @@ STD is shown as shaded regions in the main output folder, SE versions are saved 
 Generate per-session averaged plots and cross-session comparison plots:
 
 ```bash
-python scripts/process_all_sessions.py
+uv run commons-game sessions
 ```
 
 This script processes all defined experiment sessions and generates:
@@ -312,16 +456,16 @@ This script processes all defined experiment sessions and generates:
 
 ```bash
 # Run everything (default)
-python scripts/process_all_sessions.py
+uv run commons-game sessions
 
 # Run ONLY cross-session comparisons (skip per-session plots)
-python scripts/process_all_sessions.py --comparisons-only
+uv run commons-game sessions --comparisons-only
 
 # Run ONLY per-session plots (skip comparisons)
-python scripts/process_all_sessions.py --skip-comparisons
+uv run commons-game sessions --skip-comparisons
 
 # Generate plots without titles (useful for publication figures)
-python scripts/process_all_sessions.py --no-title
+uv run commons-game sessions --no-title
 ```
 
 **Comparison outputs** (`logs/comparisons/`):
@@ -353,7 +497,7 @@ Example session names:
 Generate comparison plots for different phi values and social metrics galleries:
 
 ```bash
-python scripts/plot_phi_comparisons.py --algorithm ippo
+uv run commons-game plot phi --algorithm ippo
 ```
 
 This script produces two types of plots:
@@ -374,19 +518,19 @@ All plots use Standard Error (SE) for shading.
 
 ```bash
 # Use IPPO sessions (default)
-python scripts/plot_phi_comparisons.py --algorithm ippo
+uv run commons-game plot phi --algorithm ippo
 
 # Use MAPPO sessions
-python scripts/plot_phi_comparisons.py --algorithm mappo
+uv run commons-game plot phi --algorithm mappo
 
 # Custom output directory
-python scripts/plot_phi_comparisons.py -o custom/output/dir
+uv run commons-game plot phi -o custom/output/dir
 
 # Hide titles (for publication figures)
-python scripts/plot_phi_comparisons.py --no-title
+uv run commons-game plot phi --no-title
 
 # Custom smoothing window (default: 10)
-python scripts/plot_phi_comparisons.py --smooth 20
+uv run commons-game plot phi --smooth 20
 ```
 
 The script generates both unsmoothed and smoothed versions of all plots. Smoothing applies a moving average to the mean line while keeping SE (standard error) bands unchanged.
@@ -406,7 +550,7 @@ simultaneously with their own learning policies. Each agent has independent acto
 and critic networks that use local observations only.
 
 ```bash
-uv run commons-game-train algorithm=ippo env.num_agents=5 \
+uv run commons-game train algorithm=ippo env.num_agents=5 \
     algorithm.learning_rate=0.0003 algorithm.n_steps=1024 \
     algorithm.batch_size=256 algorithm.update_epochs=4 \
     algorithm.hidden_size=256 algorithm.flatten_obs=false \
@@ -426,7 +570,7 @@ MAPPO uses a shared actor and centralized critic over concatenated observations.
 Enable it by selecting the `mappo` algorithm group:
 
 ```bash
-uv run commons-game-train algorithm=mappo env.num_agents=5 \
+uv run commons-game train algorithm=mappo env.num_agents=5 \
     algorithm.n_steps=1024 algorithm.batch_size=256 \
     algorithm.update_epochs=4 algorithm.flatten_obs=false \
     algorithm.normalize_obs=true

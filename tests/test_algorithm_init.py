@@ -7,6 +7,7 @@ module attributes, so a future refactor that silently drops or misindents
 the behavior they guard will actually fail the suite.
 """
 
+import math
 from unittest.mock import patch
 
 import numpy as np
@@ -234,3 +235,134 @@ def test_dqn_train_step_clips_gradients():
     call = mock_clip.call_args
     called_max_norm = call.args[1] if len(call.args) > 1 else call.kwargs.get("max_norm")
     assert called_max_norm == max_grad_norm
+
+
+def test_ippo_builds_one_entropy_controller_per_agent(fake_env):
+    """IPPO's networks are per-agent, so its exploration pressure is too --
+    which is what makes a diverging agent visible in ent_coef_per_agent."""
+    from commons_game_marp.train.algorithms.ippo import IPPOAlgorithm
+    from commons_game_marp.train.config import IPPOConfig
+
+    algorithm = IPPOAlgorithm(IPPOConfig())
+    algorithm.on_env_ready(fake_env)
+
+    assert set(algorithm.ent_controllers) == set(fake_env.agent_ids)
+    controllers = list(algorithm.ent_controllers.values())
+    assert len({id(c) for c in controllers}) == len(controllers)
+
+
+def test_ippo_defaults_to_adaptive_entropy(fake_env):
+    from commons_game_marp.train.algorithms.ippo import IPPOAlgorithm
+    from commons_game_marp.train.config import IPPOConfig
+
+    algorithm = IPPOAlgorithm(IPPOConfig())
+    algorithm.on_env_ready(fake_env)
+
+    for controller in algorithm.ent_controllers.values():
+        assert controller.mode == "adaptive"
+        assert controller.target_entropy == pytest.approx(0.6 * math.log(8))
+
+
+def test_ippo_reports_per_agent_entropy_metrics(fake_env):
+    """Per-agent divergence is the failure mode this change exists to catch,
+    so the per-agent series must survive into algo_metrics rather than being
+    averaged away."""
+    from commons_game_marp.train.algorithms.ippo import IPPOAlgorithm
+    from commons_game_marp.train.config import IPPOConfig
+
+    algorithm = IPPOAlgorithm(IPPOConfig())
+    algorithm.on_env_ready(fake_env)
+    algorithm._last_metrics = {
+        "entropy": 1.0,
+        "entropy_per_agent": {"agent-0": 1.5, "agent-1": 0.5},
+    }
+
+    metrics = algorithm.on_episode_end(0)
+
+    assert set(metrics["ent_coef_per_agent"]) == set(fake_env.agent_ids)
+    assert metrics["ent_coef"] == pytest.approx(
+        sum(metrics["ent_coef_per_agent"].values()) / len(fake_env.agent_ids)
+    )
+    assert metrics["target_entropy"] == pytest.approx(0.6 * math.log(8))
+    assert metrics["entropy_per_agent"] == {"agent-0": 1.5, "agent-1": 0.5}
+
+
+def test_ippo_per_agent_coefficients_diverge_with_per_agent_entropy(fake_env):
+    """The central claim of IPPO's per-agent controller design: a freeloading
+    agent's entropy diverging from its peers must show up as its coefficient
+    diverging too, not as an averaged-away scalar. Drives agent-0's entropy
+    below target and agent-1's above target directly through their own
+    controllers, then checks the coefficients moved in opposite directions."""
+    from commons_game_marp.train.algorithms.ippo import IPPOAlgorithm
+    from commons_game_marp.train.config import IPPOConfig
+
+    algorithm = IPPOAlgorithm(IPPOConfig())
+    algorithm.on_env_ready(fake_env)
+
+    target = next(iter(algorithm.ent_controllers.values())).target_entropy
+    below_target = target - 0.5
+    above_target = target + 0.5
+    assert below_target > 0  # sanity: still a valid entropy value
+
+    start = {
+        agent_id: controller.coefficient()
+        for agent_id, controller in algorithm.ent_controllers.items()
+    }
+
+    for _ in range(50):
+        algorithm.ent_controllers["agent-0"].observe_entropy(below_target)
+        algorithm.ent_controllers["agent-1"].observe_entropy(above_target)
+
+    metrics = algorithm.on_episode_end(0)
+    per_agent = metrics["ent_coef_per_agent"]
+
+    # Below target -> coefficient rises. Above target -> coefficient falls.
+    assert per_agent["agent-0"] > start["agent-0"]
+    assert per_agent["agent-1"] < start["agent-1"]
+    # The two controllers must actually have diverged from each other, not
+    # just from their own starting points.
+    assert per_agent["agent-0"] > per_agent["agent-1"]
+
+
+def test_mappo_builds_one_shared_entropy_controller(fake_env):
+    """MAPPO has a single shared actor, so a single controller."""
+    from commons_game_marp.train.algorithms.mappo import MAPPOAlgorithm
+    from commons_game_marp.train.config import MAPPOConfig
+
+    algorithm = MAPPOAlgorithm(MAPPOConfig())
+    algorithm.on_env_ready(fake_env)
+
+    assert algorithm.ent_controller.mode == "adaptive"
+    assert algorithm.ent_controller.target_entropy == pytest.approx(0.6 * math.log(8))
+
+
+def test_mappo_accepts_total_episodes_for_annealing(fake_env):
+    """Trainer.train() calls this behind a hasattr check. MAPPO had no such
+    method, so anneal mode would have silently held at the start value."""
+    from commons_game_marp.train.algorithms.mappo import MAPPOAlgorithm
+    from commons_game_marp.train.config import MAPPOConfig
+
+    config = MAPPOConfig()
+    config.ent_coef_mode = "anneal"
+    config.ent_coef = 0.1
+    config.ent_coef_end = 0.01
+
+    algorithm = MAPPOAlgorithm(config)
+    algorithm.on_env_ready(fake_env)
+    algorithm.set_total_episodes(1000)
+
+    assert algorithm.on_episode_end(-1)["ent_coef"] == pytest.approx(0.1)
+    assert algorithm.on_episode_end(349)["ent_coef"] == pytest.approx(0.0685)
+
+
+def test_mappo_reports_entropy_coefficient(fake_env):
+    from commons_game_marp.train.algorithms.mappo import MAPPOAlgorithm
+    from commons_game_marp.train.config import MAPPOConfig
+
+    algorithm = MAPPOAlgorithm(MAPPOConfig())
+    algorithm.on_env_ready(fake_env)
+
+    metrics = algorithm.on_episode_end(0)
+
+    assert metrics["ent_coef"] == pytest.approx(0.1)
+    assert metrics["target_entropy"] == pytest.approx(0.6 * math.log(8))

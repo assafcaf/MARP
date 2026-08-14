@@ -1,4 +1,6 @@
-from typing import Any, Dict
+from typing import Any, Dict, List
+
+import numpy as np
 
 from .base import Algorithm
 
@@ -11,17 +13,20 @@ class RandomAlgorithm(Algorithm):
     def on_env_ready(self, env) -> None:
         self._env = env
 
-    def act(self, observations: Dict[str, Any], step: int) -> Dict[str, int]:
-        return {agent_id: self._env.action_space.sample() for agent_id in observations.keys()}
+    def act(self, observations: np.ndarray, step: int) -> np.ndarray:
+        return np.array(
+            [self._env.action_space.sample() for _ in range(observations.shape[0])],
+            dtype=np.int64,
+        )
 
     def observe(
         self,
-        observations: Dict[str, Any],
-        actions: Dict[str, int],
-        rewards: Dict[str, float],
-        next_observations: Dict[str, Any],
-        dones: Dict[str, bool],
-        infos: Dict[str, Any],
+        observations: np.ndarray,
+        actions: np.ndarray,
+        rewards: np.ndarray,
+        next_observations: np.ndarray,
+        dones: np.ndarray,
+        infos: List[Dict[str, Any]],
         step: int,
     ) -> None:
         return None

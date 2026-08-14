@@ -17,7 +17,9 @@ dependencies = [
 ]
 
 [project.scripts]
-commons-game-train = "commons_game_marp.cli:main"
+commons-game = "commons_game_marp.cli:main"
+# Kept as an alias for the training path.
+commons-game-train = "commons_game_marp.train_cli:main"
 
 [dependency-groups]
 dev = [

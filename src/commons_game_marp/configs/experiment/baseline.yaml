@@ -1,0 +1,30 @@
+# @package _global_
+# The control arm: policies learn from environment rewards, with no learned
+# reward model in the loop.
+#
+#   uv run commons-game train +experiment=baseline
+#   uv run commons-game train -m +experiment=baseline seed=0,1,2,3,4
+#
+# Everything except the reward model is inherited from
+# sequence_narrow_vs_input_agg -- env=medium, algorithm=ippo, episodes -- so
+# this cannot drift away from the arms it is the baseline for. Change the
+# shared settings there, not here. Swap the learner from the CLI when you want
+# a baseline for a different one:
+#
+#   uv run commons-game train +experiment=baseline algorithm=mappo
+#
+# Runs land in `logs/ippo-map=medium-agents=5-rm=off/`, so they sit beside the
+# reward-model arms rather than mixing with them. `phi` is inherited but unused
+# and does not appear in the directory name while the reward model is off.
+#
+# What to compare: `social/*` and `reward_env/*` are the like-for-like series.
+# With the reward model on, the policies optimise `train/reward_pred_mean`
+# while `reward_env/*` stays the ground truth -- so `reward_env` against this
+# baseline is the measurement that says whether preference learning helped.
+# See docs/metrics.md.
+defaults:
+  - sequence_narrow_vs_input_agg
+  - override /reward_model: "off"
+
+episodes: 1000
+seed: 0
