@@ -212,6 +212,10 @@ class Trainer:
             fps=log_cfg.video_fps,
             keep_frames=log_cfg.video_keep_frames,
             total_episodes=self.config.episodes,
+            # The train loop reports one episode index per iteration and skips
+            # the `num_envs - 1` that ran alongside it, so the recorder has to
+            # test interval *crossings* against this stride.
+            stride=self.env.num_envs,
         )
 
     def _reward_obs_scale(self) -> float:

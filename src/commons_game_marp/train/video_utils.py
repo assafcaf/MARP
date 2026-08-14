@@ -14,6 +14,7 @@ class VideoRecorder:
         fps: int,
         keep_frames: bool,
         total_episodes: Optional[int] = None,
+        stride: int = 1,
     ):
         self.base_dir = base_dir
         self.enabled = enabled
@@ -22,19 +23,39 @@ class VideoRecorder:
         self.fps = fps
         self.keep_frames = keep_frames
         self.total_episodes = total_episodes
+        # Episodes the trainer's counter advances between two calls, i.e.
+        # `num_envs`. See `should_record`.
+        self.stride = max(1, stride)
         self._current_episode: Optional[int] = None
         self._frame_dir: Optional[str] = None
 
     def should_record(self, episode: int) -> bool:
+        """Whether the episode ending this iteration should be captured.
+
+        The counter this receives advances by `stride` at a time -- the trainer
+        steps `num_envs` episodes per iteration and reports the last of them,
+        `(iteration + 1) * num_envs - 1` -- so it steps *over* round multiples
+        rather than landing on them. Testing `episode % every_n == 0` therefore
+        silently recorded nothing at num_envs=4: every index it can take is odd
+        and every 100-multiple is even, so a 10000-episode run emitted one video
+        (the `total_episodes - 1` case below) instead of a hundred.
+
+        So the question is whether the span this iteration covers -- `(episode -
+        stride, episode]` -- crosses an interval boundary, not whether it lands
+        on one. At stride 1 that is exactly the old modulo test, which keeps the
+        serial path unchanged rather than merely equivalent.
+
+        `previous` is floored at 0 so the boundary at 0 is not a crossing, which
+        is what keeps the opening iteration unrecorded without a special case
+        for `episode == 0`.
+        """
         if not self.enabled:
             return False
         # Always record if it's the last episode
         if self.total_episodes is not None and episode == self.total_episodes - 1:
             return True
-        # Skip episode 0, then record based on every_n_episodes
-        if episode == 0:
-            return False
-        return episode % self.every_n_episodes == 0
+        previous = max(0, episode - self.stride)
+        return episode // self.every_n_episodes > previous // self.every_n_episodes
 
     def start(self, episode: int) -> None:
         if not self.should_record(episode):
