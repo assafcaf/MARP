@@ -61,51 +61,15 @@ def test_other_info_keys_are_unaffected():
 def test_observations_are_identical_either_way():
     """The flag must change only the info dict, never what the agent sees.
 
-    Driven from one env, toggling the flag between steps, because two separately
-    constructed envs cannot be compared: `MapEnv.reset(seed=...)` is not
-    reproducible. `spawn_point` does `random.shuffle(self.spawn_points)`, which
-    mutates the instance's list in place, so the seed fixes the shuffle but not
-    the list it shuffles. See `test_spawn_point_seeding` below.
+    Two separately seeded envs are directly comparable now that
+    `reset(seed=...)` is reproducible (see tests/test_env_seeding.py).
     """
-    env = _make(include_state=False)
-    env.reset(seed=7)
-    for _ in range(5):
-        env.step({a: STAND_STILL for a in env.agents})
+    frames = []
+    for include_state in (False, True):
+        env = _make(include_state=include_state)
+        observations, _ = env.reset(seed=7)
+        for _ in range(5):
+            observations, _, _, _ = env.step({a: STAND_STILL for a in env.agents})
+        frames.append(observations["agent-0"]["curr_obs"].copy())
+    np.testing.assert_array_equal(frames[0], frames[1])
 
-    env.include_state_in_info = False
-    without, _, _, _ = env.step({a: STAND_STILL for a in env.agents})
-    baseline = without["agent-0"]["curr_obs"].copy()
-
-    # Same env, same position, only the flag differs: standing still on a
-    # settled map reproduces the frame.
-    env.include_state_in_info = True
-    with_state, _, _, infos = env.step({a: STAND_STILL for a in env.agents})
-    assert "state" in infos["agent-0"]
-    np.testing.assert_array_equal(with_state["agent-0"]["curr_obs"].shape, baseline.shape)
-    assert with_state["agent-0"]["curr_obs"].dtype == baseline.dtype
-
-
-def test_spawn_point_seeding_is_not_reproducible():
-    """Documents a pre-existing bug: `seed` does not determine the run.
-
-    `MapEnv.spawn_point` calls `random.shuffle(self.spawn_points)`, mutating the
-    instance's own list. Seeding fixes the shuffle *operation*, but the list it
-    operates on is whatever the previous shuffles left behind, so identical
-    seeds give different agent layouts.
-
-    (`spawn_point` also never breaks out of its loop, so it returns the *last*
-    free spawn point rather than a randomly chosen one -- the shuffle is the
-    only thing making it random at all.)
-
-    This test asserts the buggy behaviour so the suite stays honest about it.
-    Flip it to `assert layouts[0] == layouts[1]` when the bug is fixed.
-    """
-    env = _make(include_state=False)
-    layouts = []
-    for _ in range(3):
-        env.reset(seed=7)
-        layouts.append([a.get_pos().tolist() for a in env.agents.values()])
-    assert len(set(map(str, layouts))) > 1, (
-        "spawn_point appears reproducible now -- if the shuffle was fixed, "
-        "update this test to assert reproducibility instead"
-    )

@@ -623,17 +623,29 @@ class MapEnv(gymnasium.Env):
         return updates
 
     def spawn_point(self):
-        """Returns a randomly selected spawn point."""
-        spawn_index = 0
-        is_free_cell = False
+        """Returns a randomly selected free spawn point.
+
+        Two bugs used to live in these six lines, and between them they meant
+        `reset(seed=...)` did not determine a run:
+
+        1. `random.shuffle(self.spawn_points)` shuffled the instance's own list
+           *in place*. Seeding fixes the shuffle operation, but it was applied
+           to whatever order the previous shuffles had left behind, so the same
+           seed produced different agent layouts on every reset. Shuffling an
+           index permutation instead leaves `self.spawn_points` in its original
+           order, so the seed alone determines the result.
+        2. The loop had no `break`, so it kept overwriting `spawn_index` and
+           returned the *last* free spawn point rather than a chosen one. The
+           in-place shuffle was the only thing making spawning random at all.
+        """
         curr_agent_pos = [agent.get_pos().tolist() for agent in self.agents.values()]
-        random.shuffle(self.spawn_points)
-        for i, spawn_point in enumerate(self.spawn_points):
+        order = list(range(len(self.spawn_points)))
+        random.shuffle(order)
+        for index in order:
+            spawn_point = self.spawn_points[index]
             if [spawn_point[0], spawn_point[1]] not in curr_agent_pos:
-                spawn_index = i
-                is_free_cell = True
-        assert is_free_cell, 'There are not enough spawn points! Check your map?'
-        return np.array(self.spawn_points[spawn_index])
+                return np.array(spawn_point)
+        raise AssertionError('There are not enough spawn points! Check your map?')
 
     def spawn_rotation(self):
         """Return a randomly selected initial rotation for an agent"""
