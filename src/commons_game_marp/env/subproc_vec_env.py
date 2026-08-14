@@ -168,6 +168,10 @@ class SubprocVecCommonsEnv:
         self._remotes[0].send((_SPACES, None))
         self.observation_space, self.action_space, self.agent_ids = self._recv(0)
         self.num_agents = len(self.agent_ids)
+        # Read off the spec rather than a worker: it is the same value, and a
+        # null `algorithm.n_steps` resolves against it during algorithm
+        # construction, before any command has been sent.
+        self.ep_length = int(spec.ep_length)
         # Offset of each worker's first environment, for render addressing.
         self._offsets = np.cumsum([0] + self._counts[:-1]).tolist()
 

@@ -195,3 +195,16 @@ class TestLifecycle:
         env.close()
         for process in processes:
             assert not process.is_alive()
+
+
+def test_ep_length_is_exposed():
+    """A null `algorithm.n_steps` resolves against this, so both vector env
+    implementations must carry it -- and the subprocess one cannot read it off
+    a live env object."""
+    spec = _spec()
+    reference = VecCommonsEnv(spec.build, NUM_ENVS)
+    env = SubprocVecCommonsEnv(spec, NUM_ENVS, num_workers=2)
+    try:
+        assert env.ep_length == reference.ep_length == spec.ep_length
+    finally:
+        env.close()
