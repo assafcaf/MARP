@@ -4,7 +4,12 @@ import gymnasium
 from .commons_agent import HarvestCommonsAgent, HARVEST_DEFAULT_VIEW_SIZE
 from .map_env import MapEnv, ACTIONS
 from .maps import SMALL_HARVEST_MAP, MEDIUM_HARVEST_MAP, HARVEST_MAP_LARGER, HARVEST_MAP
-APPLE_RADIUS = 2
+from .step_metrics import (
+    APPLE_RADIUS,
+    check_ate_last_apple_in_cluster,
+    count_apples_around,
+    disc_offsets,
+)
 
 # Add custom actions to the agent
 ACTIONS['FIRE'] = 7  # length of firing range
@@ -47,15 +52,25 @@ EMPTY_METRICS = {
 class HarvestCommonsEnv(MapEnv):
 
     def __init__(self, ascii_map=HARVEST_MAP, num_agents=1, render=False, agent_view_range=HARVEST_DEFAULT_VIEW_SIZE,
-                 color_map=None, ep_length=600, spawn_speed='slow', metric="Efficiency", penalty=False):
+                 color_map=None, ep_length=600, spawn_speed='slow', metric="Efficiency", penalty=False,
+                 include_state_in_info=False, step_metrics=False, nearby_apple_radius=APPLE_RADIUS):
         self.ep_length = ep_length
         self.apple_points = []
         self.agent_view_range = agent_view_range
         self.spawn_speed = SPAWN_PROB_SLOW if spawn_speed=="slow" else SPAWN_PROB_FAST
         self.metric=metric
         self.penalty = penalty
+        # Per-step, per-agent measurements returned on the info dict. Computed
+        # here rather than by the trainer because the trainer would have to
+        # reach into live agent objects to do it, which stops working the
+        # moment the environment lives in a worker process. Two scalars per
+        # agent cross a pipe for free; `agent.grid` does not.
+        self.step_metrics = step_metrics
+        self.nearby_apple_radius = int(nearby_apple_radius)
+        self._apple_offsets = disc_offsets(self.nearby_apple_radius)
 
-        super().__init__(ascii_map, num_agents, render, color_map=color_map)
+        super().__init__(ascii_map, num_agents, render, color_map=color_map,
+                         include_state_in_info=include_state_in_info)
 
         self.rewards_record = {}
         self.timeout_record = {}
@@ -121,12 +136,38 @@ class HarvestCommonsEnv(MapEnv):
         # begins with -- including whatever regrew this step.
         self.apple_stock_record.append(int(np.count_nonzero(self.world_map == 'A')))
 
+        if self.step_metrics:
+            self._add_step_metrics(infos, env_rewards)
+
         if self.penalty:
             for agent_id, _ in self.agents.items():
                 if action[agent_id] == 7:
                     rewards[agent_id] = -1
 
         return observations, rewards, dones, infos
+
+    def _add_step_metrics(self, infos, env_rewards):
+        """Attach `nearby_apples` and `ate_last_apple_in_cluster` per agent.
+
+        Measured *after* the step, at the agent's new position, so for a harvest
+        step `nearby_apples` counts what was left standing around the apple just
+        taken. The cluster check is skipped for agents that did not harvest --
+        it walks the spawn-point list, and running it unconditionally would
+        dominate the step.
+        """
+        for agent_id, agent in self.agents.items():
+            position = agent.get_pos()
+            info = infos[agent_id]
+            info["nearby_apples"] = count_apples_around(
+                agent.grid, position, self._apple_offsets
+            )
+            info["ate_last_apple_in_cluster"] = (
+                check_ate_last_apple_in_cluster(
+                    position, self.apple_points, self.world_map
+                )
+                if env_rewards[agent_id] > 0
+                else False
+            )
 
     def setup_agents(self):
         map_with_agents = self.get_map_with_agents()
@@ -206,7 +247,7 @@ class HarvestCommonsEnv(MapEnv):
                                     num_apples += 1
 
                 spawn_prob = self.spawn_speed[min(num_apples, 3)]
-                rand_num = np.random.rand(1)[0]
+                rand_num = self.np_random.random()
                 if rand_num < spawn_prob:
                     new_apple_points.append((row, col, 'A'))
         return new_apple_points

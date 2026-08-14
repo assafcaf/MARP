@@ -66,13 +66,42 @@ class VideoRecorder:
         self._frame_dir = os.path.join(self.base_dir, f"episode={episode:04d}")
         os.makedirs(self._frame_dir, exist_ok=True)
 
+    @property
+    def is_recording(self) -> bool:
+        """Whether this episode is being captured.
+
+        Checked before asking the vector env for a frame: with worker
+        processes that is a round trip over a pipe, and paying it on every step
+        of every non-recorded episode would cost more than the video does.
+        """
+        return self._current_episode is not None and self._frame_dir is not None
+
     def record(self, env, step: int) -> None:
-        if self._current_episode is None or self._frame_dir is None:
+        """Capture a frame by rendering the environment directly."""
+        if not self.is_recording:
             return
         if self.max_steps is not None and step >= self.max_steps:
             return
         img_path = os.path.join(self._frame_dir, f"t={step:04d}.png")
         env.render(img_path, mod="human")
+
+    def record_frame(self, frame, step: int) -> None:
+        """Capture an already-rendered RGB frame.
+
+        The array form is what works when the environment lives in a worker:
+        the frame crosses the pipe and is written here, rather than the worker
+        writing to a path the main process owns.
+        """
+        if not self.is_recording:
+            return
+        if self.max_steps is not None and step >= self.max_steps:
+            return
+        import matplotlib.pyplot as plt
+
+        img_path = os.path.join(self._frame_dir, f"t={step:04d}.png")
+        plt.cla()
+        plt.imshow(frame, interpolation="nearest")
+        plt.savefig(img_path)
 
     def finish(self) -> Optional[str]:
         if self._current_episode is None or self._frame_dir is None:

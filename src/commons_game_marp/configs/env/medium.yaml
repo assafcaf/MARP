@@ -10,3 +10,8 @@ render: false
 spawn_speed: slow
 metric: Efficiency
 penalty: false
+
+# Worker processes the environment copies are spread across. 0 steps them
+# in-process. Results are bit-identical either way; see docs/metrics.md.
+num_workers: 0
+include_state_in_info: false

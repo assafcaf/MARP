@@ -18,7 +18,6 @@ from .run_info import write_run_info
 from .run_paths import run_path
 from .video_utils import VideoRecorder
 from .episode_stats import EpisodeStats
-from .metrics import check_ate_last_apple_in_cluster, count_apples_around, disc_offsets
 
 
 def _average_social_metrics(per_env: list) -> dict:
@@ -57,11 +56,30 @@ class Trainer:
             self.config.episodes, int(self.config.env.num_envs)
         )
         self.env = self._build_env()
+        # Gymnasium spaces carry their own RNG, seeded from OS entropy unless
+        # told otherwise, so `algorithm=random` -- which calls
+        # `action_space.sample()` -- was never governed by `seed`. Nothing
+        # noticed while `MapEnv.reset` was reseeding the global streams every
+        # episode, because that masked it in the paths people watched.
+        try:
+            self.env.action_space.seed(int(self.config.seed))
+        except AttributeError:
+            pass
+        # Re-seed after the environments exist. Constructing them draws from
+        # the global streams -- but only when they are built in this process,
+        # so the stream position after `_build_env` depended on `num_workers`.
+        # Everything seeded downstream of here (policy network init, the
+        # preference buffer's pair sampling) inherited that difference and
+        # produced different numbers for the same config. Re-seeding pins the
+        # starting point regardless of where the environments live.
+        #
+        # Safe for the environments themselves: the trainer passes explicit
+        # per-iteration seeds to `reset`, which rebuilds each copy's RNG.
+        self._seed_rngs(self.config.seed)
         self.algorithm = build_algorithm(config.algorithm)
         self.algorithm.on_env_ready(self.env)
         self.logger = self._build_logger()
         self._saturated_episodes = 0
-        self._apple_offsets = disc_offsets(int(config.logging.nearby_apple_radius))
         self._announce_setup()
 
     def _announce_setup(self) -> None:
@@ -121,6 +139,9 @@ class Trainer:
             spawn_speed=env_cfg.spawn_speed,
             metric=env_cfg.metric,
             penalty=env_cfg.penalty,
+            include_state_in_info=env_cfg.include_state_in_info,
+            step_metrics=self._step_metrics_needed(),
+            nearby_apple_radius=self.config.logging.nearby_apple_radius,
         )
         num_frames = int(env_cfg.num_frames)
         if num_frames < 1:
@@ -129,8 +150,27 @@ class Trainer:
             return FrameStackEnv(env, num_frames)
         return env
 
-    def _build_env(self) -> VecCommonsEnv:
-        return VecCommonsEnv(self._make_single_env, int(self.config.env.num_envs))
+    def _build_env(self):
+        """In-process or worker-backed, depending on `env.num_workers`.
+
+        Both satisfy the same interface and produce bit-identical episodes, so
+        nothing downstream branches on which one it got.
+        """
+        env_cfg = self.config.env
+        num_envs = int(env_cfg.num_envs)
+        num_workers = int(getattr(env_cfg, "num_workers", 0))
+        if num_workers <= 0:
+            return VecCommonsEnv(self._make_single_env, num_envs)
+
+        from ..env.env_spec import EnvSpec
+        from ..env.subproc_vec_env import SubprocVecCommonsEnv
+
+        spec = EnvSpec.from_config(
+            env_cfg,
+            step_metrics=self._step_metrics_needed(),
+            nearby_apple_radius=self.config.logging.nearby_apple_radius,
+        )
+        return SubprocVecCommonsEnv(spec, num_envs, num_workers)
 
     def _projected_buffer_bytes(self) -> int:
         """Resident size the preference buffer will reach once full.
@@ -240,35 +280,21 @@ class Trainer:
         """
         return np.ascontiguousarray(observations[row])
 
-    def _row_step_metrics(self, harvested: np.ndarray):
-        """Apples in proximity, and whether a harvest emptied its cluster.
+    def _episode_seeds(self, iteration: int):
+        """One seed per environment copy for this iteration.
 
-        Computed for every row -- every agent of every environment -- because
-        both feed statistics that are only meaningful over the whole iteration.
-        The cluster check is skipped for rows that did not harvest, which is the
-        overwhelming majority of them: it walks the apple spawn-point list, and
-        running it unconditionally would dominate the step.
-
-        Positions are read off the live agent objects rather than recomputed
-        from observations, so an agent serving a timeout (parked at
-        `OUTCAST_POSITION`) correctly contributes a zero apple count.
+        Derived from the run seed, the iteration and the copy index, so an
+        episode is determined by the configuration alone -- not by how many
+        workers happen to be running or what else drew from a shared stream.
+        That is what lets `num_workers` change without changing results.
         """
-        vec = self.env
-        offsets = self._apple_offsets
-        nearby = np.zeros(vec.num_rows, dtype=np.int64)
-        last_in_cluster = np.zeros(vec.num_rows, dtype=bool)
-        for env_idx, env in enumerate(vec.envs):
-            base = env_idx * vec.num_agents
-            for agent_idx, agent_id in enumerate(vec.agent_ids):
-                row = base + agent_idx
-                agent = env.agents[agent_id]
-                position = agent.get_pos()
-                nearby[row] = count_apples_around(agent.grid, position, offsets)
-                if harvested[row]:
-                    last_in_cluster[row] = check_ate_last_apple_in_cluster(
-                        position, env.apple_points, env.world_map
-                    )
-        return nearby, last_in_cluster
+        base = (int(self.config.seed) * 1_000_003 + iteration * 9_176) & 0x7FFFFFFF
+        return [(base + index * 7_919) & 0x7FFFFFFF for index in range(self.env.num_envs)]
+
+    def _step_metrics_needed(self) -> bool:
+        """Whether anything downstream consumes the env's per-step metrics."""
+        log_cfg = self.config.logging
+        return bool(log_cfg.detailed_metrics or log_cfg.log_agent_episode_details)
 
     @staticmethod
     def _env_rewards(infos, rewards: np.ndarray) -> np.ndarray:
@@ -373,7 +399,7 @@ class Trainer:
             # with different num_envs overlay on one x-axis.
             episode = (iteration + 1) * num_envs - 1
 
-            obs, infos = vec.reset()
+            obs, infos = vec.reset(self._episode_seeds(iteration))
             episode_rewards = np.zeros(num_rows, dtype=np.float64)
             episode_pred_rewards = (
                 np.zeros(num_rows, dtype=np.float64) if rm_cfg.enabled else None
@@ -438,18 +464,25 @@ class Trainer:
                         obs, actions, rewards, next_obs, dones, infos, step
                     )
 
-                video_recorder.record(vec.envs[0], step)
+                if video_recorder.is_recording:
+                    video_recorder.record_frame(vec.render_frame(0), step)
                 episode_rewards += rewards
 
                 env_rewards = self._env_rewards(infos, rewards)
                 episode_env_rewards += env_rewards
                 harvested = env_rewards > 0
 
-                # One pass covers both consumers, so the apple counting is done
-                # once whether it is headed for TensorBoard, the per-agent CSV,
-                # or both.
+                # Computed inside the environment and returned on the info
+                # dict, so this works identically whether the environment is
+                # in-process or in a worker.
                 if episode_stats is not None or agent_episode_details is not None:
-                    nearby_apples, last_in_cluster = self._row_step_metrics(harvested)
+                    nearby_apples = np.asarray(
+                        [info.get("nearby_apples", 0) for info in infos], dtype=np.int64
+                    )
+                    last_in_cluster = np.asarray(
+                        [info.get("ate_last_apple_in_cluster", False) for info in infos],
+                        dtype=bool,
+                    )
                 if episode_stats is not None:
                     episode_stats.record_step(
                         actions=actions,

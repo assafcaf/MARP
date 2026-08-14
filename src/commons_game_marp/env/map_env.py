@@ -10,7 +10,8 @@ from .constants import ACTIONS, ORIENTATIONS, DIFFERENT_COLORMAP, SAME_COLORMAP
 
 class MapEnv(gymnasium.Env):
 
-    def __init__(self, ascii_map, num_agents=1, render=True, color_map=None, same_color=False):
+    def __init__(self, ascii_map, num_agents=1, render=True, color_map=None, same_color=False,
+                 include_state_in_info=False):
         """
 
         Parameters
@@ -24,7 +25,30 @@ class MapEnv(gymnasium.Env):
             Whether to render the environment
         color_map: dict
             Specifies how to convert between ascii chars and colors
+        include_state_in_info: bool
+            Put the full-map RGB render on every agent's info dict as `state`.
+
+            Off by default, and that default is worth defending. The render is a
+            whole-map `map_to_colors` pass *per agent per step* -- 1938 bytes on
+            the medium map against 675 for the observation the agent actually
+            sees -- and it measured at ~48% of total step time with nothing in
+            the repo reading it. It also has to cross a process boundary once
+            the environments run in workers, at ~15 MB per iteration.
+
+            Turn it on only for an external consumer that needs global state.
         """# rather to use effiency or effiency*peace
+        self.include_state_in_info = include_state_in_info
+        # Per-environment RNGs. Every source of randomness in here used to draw
+        # from the process-global numpy/random streams, which made an episode
+        # depend on how many other environments shared the process and in what
+        # order they stepped -- so results changed with `num_workers`, and two
+        # copies in one process were correlated through the shared stream.
+        #
+        # The seeds are drawn from the global stream at construction, so a run
+        # is still governed by `Trainer._seed_rngs`; after that each copy is
+        # self-contained.
+        self.np_random = np.random.default_rng(np.random.randint(0, 2**31 - 1))
+        self.py_random = random.Random(np.random.randint(0, 2**31 - 1))
         self.num_agents = num_agents
         self.base_map = self.ascii_to_numpy(ascii_map)
         # map without agents or beams
@@ -148,7 +172,9 @@ class MapEnv(gymnasium.Env):
             observations[agent.agent_id] = {"curr_obs": rgb_arr}
             rewards[agent.agent_id] = agent.compute_reward()
             dones[agent.agent_id] = agent.get_done()
-            infos[agent.agent_id] = {"state": self.state}
+            infos[agent.agent_id] = (
+                {"state": self.state} if self.include_state_in_info else {}
+            )
         dones["__all__"] = np.any(list(dones.values()))
         return observations, rewards, dones, infos
 
@@ -171,8 +197,10 @@ class MapEnv(gymnasium.Env):
             to be zero.
         """
         if seed is not None:
-            np.random.seed(seed)
-            random.seed(seed)
+            # Re-seed this environment only. Seeding the global streams here
+            # reset the policy's exploration RNG once per episode.
+            self.np_random = np.random.default_rng(seed)
+            self.py_random = random.Random(seed)
         self.beam_pos = []
         self.agents = {}
         self.setup_agents()
@@ -190,7 +218,9 @@ class MapEnv(gymnasium.Env):
             rgb_arr = self.map_to_colors(agent.get_state(), self.color_map, full_map=False)
             # observations[agent.agent_id] = rgb_arr
             observations[agent.agent_id] = {"curr_obs": rgb_arr}
-            infos[agent.agent_id] = {"state": self.state}
+            infos[agent.agent_id] = (
+                {"state": self.state} if self.include_state_in_info else {}
+            )
         return observations, infos
 
     @property
@@ -279,12 +309,54 @@ class MapEnv(gymnasium.Env):
         if not full_map:
             map[map.shape[0]//2, map.shape[1]//2] = 'S'
 
-        rgb_arr = np.zeros((map.shape[0], map.shape[1], 3), dtype=np.uint8)
-        for row_elem in range(map.shape[0]):
-            for col_elem in range(map.shape[1]):
-                rgb_arr[row_elem, col_elem, :] = color_map[map[row_elem, col_elem]]
+        lut, known = self._colour_lut(color_map)
+        # A character array of itemsize 4 is one UCS-4 code point per cell, so
+        # viewing it as uint32 gives the code points directly and the whole
+        # conversion becomes one fancy-index into the table. The nested Python
+        # loop this replaces did a dict lookup and a 3-element assignment per
+        # cell -- 225 of each per agent view, per agent, per step, and it was
+        # the single largest cost inside `step`.
+        codes = map if map.dtype.itemsize == 4 else map.astype('<U1')
+        codes = codes.view(np.uint32).reshape(map.shape)
 
-        return rgb_arr
+        # Preserves the KeyError the dict lookup used to raise. One vectorised
+        # test, rather than silently rendering an unmapped character black.
+        if codes.max(initial=0) >= known.size or not known[codes].all():
+            missing = {
+                chr(code) for code in np.unique(codes)
+                if code >= known.size or not known[code]
+            }
+            raise KeyError(
+                f"no colour for map character(s) {sorted(missing)!r}"
+            )
+        return lut[codes]
+
+    def _colour_lut(self, color_map):
+        """`(lut, known)` for a colour dict, built once and cached.
+
+        `lut[code]` is the RGB triple for the character with that code point;
+        `known[code]` says whether the dict defined one. Cached per dict
+        identity because `step` passes the same `self.color_map` object every
+        time, and rebuilding a 128-row table per agent per step would give back
+        most of what the vectorisation wins.
+        """
+        cached = getattr(self, "_colour_lut_cache", None)
+        if cached is not None and cached[0] is color_map:
+            return cached[1], cached[2]
+
+        # `''` is a legitimate key (see constants.py) and numpy stores an empty
+        # character cell as code point 0, so it maps there rather than being
+        # skipped.
+        codes = {(ord(key) if key else 0): value for key, value in color_map.items()}
+        size = max(codes) + 1
+        lut = np.zeros((size, 3), dtype=np.uint8)
+        known = np.zeros(size, dtype=bool)
+        for code, colour in codes.items():
+            lut[code] = colour
+            known[code] = True
+
+        self._colour_lut_cache = (color_map, lut, known)
+        return lut, known
 
     @property
     def state(self):
@@ -376,7 +448,7 @@ class MapEnv(gymnasium.Env):
 
             # shuffle so that a random agent has slot priority
             shuffle_list = list(zip(agent_to_slot, move_slots))
-            np.random.shuffle(shuffle_list)
+            self.np_random.shuffle(shuffle_list)
             agent_to_slot, move_slots = zip(*shuffle_list)
             unique_move, indices, return_count = np.unique(move_slots, return_index=True,
                                                            return_counts=True, axis=0)
@@ -606,21 +678,33 @@ class MapEnv(gymnasium.Env):
         return updates
 
     def spawn_point(self):
-        """Returns a randomly selected spawn point."""
-        spawn_index = 0
-        is_free_cell = False
+        """Returns a randomly selected free spawn point.
+
+        Two bugs used to live in these six lines, and between them they meant
+        `reset(seed=...)` did not determine a run:
+
+        1. `random.shuffle(self.spawn_points)` shuffled the instance's own list
+           *in place*. Seeding fixes the shuffle operation, but it was applied
+           to whatever order the previous shuffles had left behind, so the same
+           seed produced different agent layouts on every reset. Shuffling an
+           index permutation instead leaves `self.spawn_points` in its original
+           order, so the seed alone determines the result.
+        2. The loop had no `break`, so it kept overwriting `spawn_index` and
+           returned the *last* free spawn point rather than a chosen one. The
+           in-place shuffle was the only thing making spawning random at all.
+        """
         curr_agent_pos = [agent.get_pos().tolist() for agent in self.agents.values()]
-        random.shuffle(self.spawn_points)
-        for i, spawn_point in enumerate(self.spawn_points):
+        order = list(range(len(self.spawn_points)))
+        self.py_random.shuffle(order)
+        for index in order:
+            spawn_point = self.spawn_points[index]
             if [spawn_point[0], spawn_point[1]] not in curr_agent_pos:
-                spawn_index = i
-                is_free_cell = True
-        assert is_free_cell, 'There are not enough spawn points! Check your map?'
-        return np.array(self.spawn_points[spawn_index])
+                return np.array(spawn_point)
+        raise AssertionError('There are not enough spawn points! Check your map?')
 
     def spawn_rotation(self):
         """Return a randomly selected initial rotation for an agent"""
-        rand_int = np.random.randint(len(ORIENTATIONS.keys()))
+        rand_int = int(self.np_random.integers(len(ORIENTATIONS.keys())))
         return list(ORIENTATIONS.keys())[rand_int]
 
     def rotate_view(self, orientation, view):

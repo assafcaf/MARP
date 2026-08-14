@@ -25,6 +25,21 @@ class EnvConfig:
     spawn_speed: str = "slow"
     metric: str = "Efficiency"
     penalty: bool = False
+    # Put the full-map RGB render on every agent's info dict as `state`.
+    # Off by default: it is a whole-map render per agent per step -- 1938 bytes
+    # against the observation's 675 on the medium map -- that nothing in this
+    # repo reads. Enabling it measured 2.2x slower (3064 -> 1398 agent-steps/s)
+    # and, with `num_workers` above 0, adds ~15 MB per iteration of pipe
+    # traffic. Turn it on only for an external consumer that needs global state.
+    include_state_in_info: bool = False
+    # Worker processes the environment copies are spread across. 0 steps them
+    # in-process, which is what `num_envs` used to do exclusively -- and why it
+    # bought sample decorrelation but no wall-clock speed. Above 0 the copies
+    # run in parallel; results are bit-identical either way.
+    #
+    # More workers than `num_envs` is clamped to `num_envs`. Each worker is a
+    # process, so keep the total under the core count.
+    num_workers: int = 0
 
 
 @dataclass
