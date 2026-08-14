@@ -18,7 +18,6 @@ from .run_info import write_run_info
 from .run_paths import run_path
 from .video_utils import VideoRecorder
 from .episode_stats import EpisodeStats
-from .metrics import check_ate_last_apple_in_cluster, count_apples_around, disc_offsets
 
 
 def _average_social_metrics(per_env: list) -> dict:
@@ -61,7 +60,6 @@ class Trainer:
         self.algorithm.on_env_ready(self.env)
         self.logger = self._build_logger()
         self._saturated_episodes = 0
-        self._apple_offsets = disc_offsets(int(config.logging.nearby_apple_radius))
         self._announce_setup()
 
     def _announce_setup(self) -> None:
@@ -122,6 +120,8 @@ class Trainer:
             metric=env_cfg.metric,
             penalty=env_cfg.penalty,
             include_state_in_info=env_cfg.include_state_in_info,
+            step_metrics=self._step_metrics_needed(),
+            nearby_apple_radius=self.config.logging.nearby_apple_radius,
         )
         num_frames = int(env_cfg.num_frames)
         if num_frames < 1:
@@ -237,35 +237,10 @@ class Trainer:
         """
         return np.ascontiguousarray(observations[row])
 
-    def _row_step_metrics(self, harvested: np.ndarray):
-        """Apples in proximity, and whether a harvest emptied its cluster.
-
-        Computed for every row -- every agent of every environment -- because
-        both feed statistics that are only meaningful over the whole iteration.
-        The cluster check is skipped for rows that did not harvest, which is the
-        overwhelming majority of them: it walks the apple spawn-point list, and
-        running it unconditionally would dominate the step.
-
-        Positions are read off the live agent objects rather than recomputed
-        from observations, so an agent serving a timeout (parked at
-        `OUTCAST_POSITION`) correctly contributes a zero apple count.
-        """
-        vec = self.env
-        offsets = self._apple_offsets
-        nearby = np.zeros(vec.num_rows, dtype=np.int64)
-        last_in_cluster = np.zeros(vec.num_rows, dtype=bool)
-        for env_idx, env in enumerate(vec.envs):
-            base = env_idx * vec.num_agents
-            for agent_idx, agent_id in enumerate(vec.agent_ids):
-                row = base + agent_idx
-                agent = env.agents[agent_id]
-                position = agent.get_pos()
-                nearby[row] = count_apples_around(agent.grid, position, offsets)
-                if harvested[row]:
-                    last_in_cluster[row] = check_ate_last_apple_in_cluster(
-                        position, env.apple_points, env.world_map
-                    )
-        return nearby, last_in_cluster
+    def _step_metrics_needed(self) -> bool:
+        """Whether anything downstream consumes the env's per-step metrics."""
+        log_cfg = self.config.logging
+        return bool(log_cfg.detailed_metrics or log_cfg.log_agent_episode_details)
 
     @staticmethod
     def _env_rewards(infos, rewards: np.ndarray) -> np.ndarray:
@@ -442,11 +417,17 @@ class Trainer:
                 episode_env_rewards += env_rewards
                 harvested = env_rewards > 0
 
-                # One pass covers both consumers, so the apple counting is done
-                # once whether it is headed for TensorBoard, the per-agent CSV,
-                # or both.
+                # Computed inside the environment and returned on the info
+                # dict, so this works identically whether the environment is
+                # in-process or in a worker.
                 if episode_stats is not None or agent_episode_details is not None:
-                    nearby_apples, last_in_cluster = self._row_step_metrics(harvested)
+                    nearby_apples = np.asarray(
+                        [info.get("nearby_apples", 0) for info in infos], dtype=np.int64
+                    )
+                    last_in_cluster = np.asarray(
+                        [info.get("ate_last_apple_in_cluster", False) for info in infos],
+                        dtype=bool,
+                    )
                 if episode_stats is not None:
                     episode_stats.record_step(
                         actions=actions,
